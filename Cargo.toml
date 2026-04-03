@@ -1,0 +1,64 @@
+[workspace]
+members = [
+    "crates/gguf",
+    "crates/engine",
+    "crates/reference",
+    "crates/tokenizer",
+    "crates/kernels",
+    "crates/bench",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Internal crates
+bare-metal-gguf = { path = "crates/gguf" }
+bare-metal-engine = { path = "crates/engine" }
+bare-metal-reference = { path = "crates/reference" }
+bare-metal-tokenizer = { path = "crates/tokenizer" }
+bare-metal-kernels = { path = "crates/kernels" }
+
+# ML reference
+candle-core = { version = "0.8", features = ["metal"] }
+candle-nn = "0.8"
+candle-transformers = "0.8"
+
+# Apple Metal
+metal = "0.29"
+objc = "0.2"
+
+# Memory mapping
+memmap2 = "0.9"
+
+# Numeric types
+half = { version = "2", features = ["bytemuck"] }
+bytemuck = { version = "1", features = ["derive"] }
+
+# Tokenizer
+tokenizers = { version = "0.20", features = ["http"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+
+# HTTP server (Phase 6)
+axum = "0.7"
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Benchmarks
+criterion = { version = "0.5", features = ["html_reports"] }

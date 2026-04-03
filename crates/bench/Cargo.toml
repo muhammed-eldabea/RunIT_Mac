@@ -1,0 +1,18 @@
+[package]
+name = "bare-metal-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Benchmarks for bare-metal LLM inference engine"
+
+[[bench]]
+name = "gguf_parse"
+harness = false
+
+[dependencies]
+bare-metal-gguf = { workspace = true }
+bare-metal-engine = { workspace = true }
+bare-metal-reference = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }

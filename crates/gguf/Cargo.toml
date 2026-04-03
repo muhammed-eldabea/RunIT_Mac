@@ -1,0 +1,13 @@
+[package]
+name = "bare-metal-gguf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GGUF binary format parser for bare-metal LLM inference"
+
+[dependencies]
+thiserror = { workspace = true }
+half = { workspace = true }
+bytemuck = { workspace = true }
+
+[dev-dependencies]

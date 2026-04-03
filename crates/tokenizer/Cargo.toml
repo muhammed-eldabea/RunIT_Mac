@@ -1,0 +1,10 @@
+[package]
+name = "bare-metal-tokenizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BPE tokenizer wrapper for bare-metal LLM inference"
+
+[dependencies]
+tokenizers = { workspace = true }
+thiserror = { workspace = true }

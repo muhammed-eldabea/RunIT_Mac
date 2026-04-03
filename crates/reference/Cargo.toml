@@ -1,0 +1,10 @@
+[package]
+name = "bare-metal-reference"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Candle-based reference backend and numerical validation harness"
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }

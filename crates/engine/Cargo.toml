@@ -1,0 +1,40 @@
+[package]
+name = "bare-metal-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Custom LLM inference engine for Apple Silicon"
+
+[dependencies]
+bare-metal-gguf = { workspace = true }
+bare-metal-tokenizer = { workspace = true }
+memmap2 = { workspace = true }
+half = { workspace = true }
+bytemuck = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+axum = { workspace = true }
+tokio-stream = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = { workspace = true }
+bare-metal-kernels = { workspace = true }
+
+[[bin]]
+name = "inspect"
+path = "src/bin/inspect.rs"
+
+[[bin]]
+name = "generate"
+path = "src/bin/generate.rs"
+
+[[bin]]
+name = "serve"
+path = "src/bin/serve.rs"
+
+[dev-dependencies]
+tempfile = "3"
