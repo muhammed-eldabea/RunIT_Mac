@@ -170,7 +170,7 @@ kernel void gemv_q4k_add_f16(
 }
 
 // Q4K GEMV with f32 input and f32 output: y_f32 = A_q4k * x_f32
-// For Q/K/V projections needing full f32 precision through the attention path.
+// Uses Kahan compensated summation for precision.
 kernel void gemv_q4k_f32in_f32out(
     device const uchar* A_q4k [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -185,6 +185,7 @@ kernel void gemv_q4k_f32in_f32out(
     const uint n_blocks_per_row = K / Q4K_BLOCK_ELEMS;
     device const uchar* row_data = A_q4k + row * n_blocks_per_row * Q4K_BLOCK_BYTES;
     float acc = 0.0f;
+    float comp = 0.0f;
     for (uint blk = lid; blk < n_blocks_per_row; blk += lsize) {
         device const uchar* block = row_data + blk * Q4K_BLOCK_BYTES;
         const float d    = float(*reinterpret_cast<device const half*>(block + 0));
@@ -201,8 +202,10 @@ kernel void gemv_q4k_f32in_f32out(
             const uint base_lo = j*64, base_hi = j*64+32;
             for (uint i = 0; i < 32; i++) {
                 const uchar bv = qs[j*32+i];
-                acc += (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i];
-                acc += (d_hi*float(bv>>4u)-m_hi2)   * x_vec[x_base+base_hi+i];
+                float p1 = (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i] - comp;
+                float t1 = acc + p1; comp = (t1 - acc) - p1; acc = t1;
+                float p2 = (d_hi*float(bv>>4u)-m_hi2) * x_vec[x_base+base_hi+i] - comp;
+                float t2 = acc + p2; comp = (t2 - acc) - p2; acc = t2;
             }
         }
     }
@@ -211,6 +214,7 @@ kernel void gemv_q4k_f32in_f32out(
 }
 
 // Q4K GEMV + f32 residual with f32 input: y_f32[i] = (A_q4k * x_f32)[i] + residual_f32[i]
+// Uses Kahan compensated summation for precision.
 kernel void gemv_q4k_add_f32_f32in(
     device const uchar* A_q4k    [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -226,6 +230,7 @@ kernel void gemv_q4k_add_f32_f32in(
     const uint n_blocks_per_row = K / Q4K_BLOCK_ELEMS;
     device const uchar* row_data = A_q4k + row * n_blocks_per_row * Q4K_BLOCK_BYTES;
     float acc = 0.0f;
+    float comp = 0.0f;
     for (uint blk = lid; blk < n_blocks_per_row; blk += lsize) {
         device const uchar* block = row_data + blk * Q4K_BLOCK_BYTES;
         const float d    = float(*reinterpret_cast<device const half*>(block + 0));
@@ -242,8 +247,10 @@ kernel void gemv_q4k_add_f32_f32in(
             const uint base_lo = j*64, base_hi = j*64+32;
             for (uint i = 0; i < 32; i++) {
                 const uchar bv = qs[j*32+i];
-                acc += (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i];
-                acc += (d_hi*float(bv>>4u)-m_hi2)   * x_vec[x_base+base_hi+i];
+                float p1 = (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i] - comp;
+                float t1 = acc + p1; comp = (t1 - acc) - p1; acc = t1;
+                float p2 = (d_hi*float(bv>>4u)-m_hi2) * x_vec[x_base+base_hi+i] - comp;
+                float t2 = acc + p2; comp = (t2 - acc) - p2; acc = t2;
             }
         }
     }

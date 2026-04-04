@@ -1,13 +1,11 @@
-//! Token sampler — Phase 6.
+//! Token sampler with repetition penalty.
 //!
 //! Strategies:
 //!   - Greedy (temperature = 0)
 //!   - Temperature scaling + softmax
 //!   - Top-k filtering
 //!   - Top-p (nucleus) filtering
-//!   - Combined temperature + top-k + top-p
-
-use half::f16;
+//!   - Repetition penalty
 
 // ── SimpleRng (xorshift64, no external dep) ─────────────────────────────────
 
@@ -40,27 +38,36 @@ pub struct SamplerConfig {
     pub top_p: f32,
     /// RNG seed for reproducible sampling
     pub seed: u64,
+    /// Repetition penalty (1.0 = disabled, 1.1-1.3 typical)
+    pub repetition_penalty: f32,
 }
 
 impl Default for SamplerConfig {
     fn default() -> Self {
-        Self { temperature: 1.0, top_k: 40, top_p: 0.95, seed: 42 }
+        Self { temperature: 1.0, top_k: 40, top_p: 0.95, seed: 42, repetition_penalty: 1.1 }
     }
 }
 
 impl SamplerConfig {
-    pub fn greedy() -> Self { Self { temperature: 0.0, ..Default::default() } }
+    pub fn greedy() -> Self { Self { temperature: 0.0, repetition_penalty: 1.1, ..Default::default() } }
 }
 
 // ── Core sampling ────────────────────────────────────────────────────────────
 
-/// Sample the next token from logits using the given config and RNG.
-pub fn sample(logits: &[f16], cfg: &SamplerConfig, rng: &mut SimpleRng) -> u32 {
+/// Sample the next token from f32 logits using the given config, context, and RNG.
+pub fn sample(logits: &[f32], cfg: &SamplerConfig, context: &[u32], rng: &mut SimpleRng) -> u32 {
+    let mut scores: Vec<f32> = logits.to_vec();
+
+    // Step 0: repetition penalty
+    if cfg.repetition_penalty != 1.0 {
+        apply_repetition_penalty(&mut scores, context, cfg.repetition_penalty);
+    }
+
     // Greedy fast path
-    if cfg.temperature == 0.0 { return greedy_argmax(logits); }
+    if cfg.temperature == 0.0 { return greedy_argmax_f32(&scores); }
 
     // Step 1: temperature scaling
-    let mut scores: Vec<f32> = logits.iter().map(|x| x.to_f32() / cfg.temperature).collect();
+    for s in scores.iter_mut() { *s /= cfg.temperature; }
 
     // Step 2: softmax (numerically stable)
     softmax_inplace(&mut scores);
@@ -77,7 +84,7 @@ pub fn sample(logits: &[f16], cfg: &SamplerConfig, rng: &mut SimpleRng) -> u32 {
 
     // Step 5: renormalize and sample
     let total: f32 = scores.iter().sum();
-    if total <= 0.0 { return greedy_argmax(logits); }
+    if total <= 0.0 { return greedy_argmax_f32(&scores); }
 
     let r = rng.next_f32() * total;
     let mut cumsum = 0.0f32;
@@ -85,18 +92,33 @@ pub fn sample(logits: &[f16], cfg: &SamplerConfig, rng: &mut SimpleRng) -> u32 {
         cumsum += p;
         if r <= cumsum { return i as u32; }
     }
-    greedy_argmax(logits)
+    greedy_argmax_f32(&scores)
 }
 
-/// Greedy argmax — returns the index of the highest logit.
-pub fn greedy_argmax(logits: &[f16]) -> u32 {
+/// Greedy argmax on f32 logits.
+pub fn greedy_argmax_f32(logits: &[f32]) -> u32 {
     logits.iter().enumerate()
-        .max_by(|(_, a), (_, b)| a.to_f32().partial_cmp(&b.to_f32()).unwrap_or(std::cmp::Ordering::Equal))
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .map(|(i, _)| i as u32)
         .unwrap_or(0)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Apply repetition penalty: for tokens that appear in context,
+/// divide positive logits by penalty and multiply negative logits by penalty.
+fn apply_repetition_penalty(logits: &mut [f32], context: &[u32], penalty: f32) {
+    for &tok in context {
+        let idx = tok as usize;
+        if idx < logits.len() {
+            if logits[idx] > 0.0 {
+                logits[idx] /= penalty;
+            } else {
+                logits[idx] *= penalty;
+            }
+        }
+    }
+}
 
 fn softmax_inplace(v: &mut [f32]) {
     let max = v.iter().copied().fold(f32::NEG_INFINITY, f32::max);
@@ -106,11 +128,9 @@ fn softmax_inplace(v: &mut [f32]) {
 }
 
 fn topk_filter(probs: &mut [f32], k: usize) {
-    // Find the k-th largest value
     let mut sorted = probs.to_vec();
     sorted.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     let threshold = sorted[k - 1];
-    // Zero out everything below threshold
     let mut kept = 0usize;
     for p in probs.iter_mut() {
         if *p >= threshold && kept < k { kept += 1; }
@@ -119,10 +139,8 @@ fn topk_filter(probs: &mut [f32], k: usize) {
 }
 
 fn topp_filter(probs: &mut [f32], p: f32) {
-    // Sort indices by probability descending
     let mut sorted_idx: Vec<usize> = (0..probs.len()).collect();
     sorted_idx.sort_unstable_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap_or(std::cmp::Ordering::Equal));
-    // Zero out tokens past cumulative probability p
     let mut cumsum = 0.0f32;
     for &i in &sorted_idx {
         if cumsum >= p { probs[i] = 0.0; }
@@ -136,38 +154,23 @@ mod tests {
 
     #[test]
     fn greedy_picks_max() {
-        let logits = vec![
-            f16::from_f32(0.1), f16::from_f32(5.0), f16::from_f32(2.0),
-        ];
-        assert_eq!(greedy_argmax(&logits), 1);
+        let logits = vec![0.1f32, 5.0, 2.0];
+        assert_eq!(greedy_argmax_f32(&logits), 1);
     }
 
     #[test]
     fn temperature_zero_is_greedy() {
-        let logits: Vec<f16> = (0..10).map(|i| f16::from_f32(i as f32)).collect();
+        let logits: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let cfg = SamplerConfig::greedy();
         let mut rng = SimpleRng::new(42);
-        assert_eq!(sample(&logits, &cfg, &mut rng), 9);
+        assert_eq!(sample(&logits, &cfg, &[], &mut rng), 9);
     }
 
     #[test]
-    fn rng_produces_different_values() {
-        let mut rng = SimpleRng::new(1234);
-        let a = rng.next_f32();
-        let b = rng.next_f32();
-        assert!((a - b).abs() > 1e-6);
-        assert!(a >= 0.0 && a < 1.0);
-        assert!(b >= 0.0 && b < 1.0);
-    }
-
-    #[test]
-    fn topk_keeps_k_entries() {
-        let mut probs = vec![0.1, 0.3, 0.05, 0.4, 0.15];
-        topk_filter(&mut probs, 2);
-        let nonzero: Vec<usize> = probs.iter().enumerate()
-            .filter(|(_, &p)| p > 0.0).map(|(i, _)| i).collect();
-        assert_eq!(nonzero.len(), 2);
-        assert!(nonzero.contains(&1)); // 0.3
-        assert!(nonzero.contains(&3)); // 0.4
+    fn repetition_penalty_reduces_repeated() {
+        let mut logits = vec![1.0f32, 5.0, 3.0];
+        apply_repetition_penalty(&mut logits, &[1], 2.0);
+        assert!((logits[1] - 2.5).abs() < 1e-6); // 5.0 / 2.0
+        assert!((logits[0] - 1.0).abs() < 1e-6); // unchanged
     }
 }

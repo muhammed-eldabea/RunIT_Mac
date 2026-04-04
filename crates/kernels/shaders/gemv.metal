@@ -110,6 +110,7 @@ kernel void gemv_add_f16(
 }
 
 // Full f32 GEMV with f32 output: y_f32 = A_f32 * x_f32
+// Uses Kahan compensated summation to reduce accumulation error from O(N*eps) to O(eps).
 kernel void gemv_f32_f32out(
     device const float* A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -123,14 +124,13 @@ kernel void gemv_f32_f32out(
     if (row >= M) return;
     device const float* A_row = A + row * K;
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        float4 xv = ((device const float4*)x_vec)[i];
-        acc += av.x*xv.x + av.y*xv.y + av.z*xv.z + av.w*xv.w;
+    float comp = 0.0f;
+    for (uint i = lid; i < K; i += lsize) {
+        float prod = A_row[i] * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    for (uint i = k4*4 + lid; i < K; i += lsize)
-        acc += A_row[i] * x_vec[i];
     acc = simd_sum(acc);
     if (lid == 0) y[row] = acc;
 }
@@ -238,6 +238,7 @@ kernel void gemv_add_f32res_f16(
 }
 
 // GEMV + f32 residual with f32 input: y_f32[i] = (A_f16 * x_f32)[i] + res_f32[i]
+// Uses Kahan compensated summation for precision.
 kernel void gemv_add_f32_f16w(
     device const half*  A        [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -252,14 +253,19 @@ kernel void gemv_add_f32_f16w(
     if (row >= M) return;
     device const half* A_row = A + row * K;
     float acc = 0.0f;
-    for (uint i = lid; i < K; i += lsize)
-        acc += float(A_row[i]) * x_vec[i];
+    float comp = 0.0f;
+    for (uint i = lid; i < K; i += lsize) {
+        float prod = float(A_row[i]) * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
+    }
     acc = simd_sum(acc);
     if (lid == 0) y[row] = acc + residual[row];
 }
 
 // GEMV with f16 weights, f32 input, f32 output: y_f32 = A_f16 * x_f32
-// Fills the gap for Q/K/V projections that need full f32 output precision.
+// Uses Kahan compensated summation for precision.
 kernel void gemv_f16w_f32in_f32out(
     device const half*  A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -273,8 +279,13 @@ kernel void gemv_f16w_f32in_f32out(
     if (row >= M) return;
     device const half* A_row = A + row * K;
     float acc = 0.0f;
-    for (uint i = lid; i < K; i += lsize)
-        acc += float(A_row[i]) * x_vec[i];
+    float comp = 0.0f;
+    for (uint i = lid; i < K; i += lsize) {
+        float prod = float(A_row[i]) * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
+    }
     acc = simd_sum(acc);
     if (lid == 0) y[row] = acc;
 }
@@ -402,6 +413,7 @@ kernel void gemv_add_f32res_f32w(
 }
 
 // GEMV + f32 residual with f32 weights and f32 input: y_f32 = A_f32 * x_f32 + res_f32
+// Uses Kahan compensated summation for precision.
 kernel void gemv_add_f32_f32w(
     device const float* A        [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -416,15 +428,13 @@ kernel void gemv_add_f32_f32w(
     if (row >= M) return;
     device const float* A_row = A + row * K;
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        float4 xv = ((device const float4*)x_vec)[i];
-        acc += av.x * xv.x + av.y * xv.y + av.z * xv.z + av.w * xv.w;
+    float comp = 0.0f;
+    for (uint i = lid; i < K; i += lsize) {
+        float prod = A_row[i] * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += A_row[i] * x_vec[i];
     acc = simd_sum(acc);
     if (lid == 0) y[row] = acc + residual[row];
 }

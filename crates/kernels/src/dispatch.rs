@@ -31,6 +31,26 @@ pub fn silu_mul_f16(
     })
 }
 
+/// f32 SwiGLU: out[i] = silu(gate[i]) * up[i], all f32.
+pub fn silu_mul_f32(
+    ctx: &MetalContext,
+    gate: &Buffer,
+    up: &Buffer,
+    out: &Buffer,
+    n: u32,
+) -> Result<()> {
+    ctx.encode("silu_mul_f32", |enc| {
+        enc.set_buffer(0, Some(gate), 0);
+        enc.set_buffer(1, Some(up),   0);
+        enc.set_buffer(2, Some(out),  0);
+        enc.set_bytes(3, 4, &n as *const u32 as *const _);
+        enc.dispatch_threads(
+            MTLSize { width: n as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_ELEM,  height: 1, depth: 1 },
+        );
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Elementwise add: out[i] = a[i] + b[i]
 // ─────────────────────────────────────────────────────────────────────────────

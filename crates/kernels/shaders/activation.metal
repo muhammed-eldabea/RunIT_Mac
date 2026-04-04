@@ -152,6 +152,20 @@ kernel void silu_mul_f16(
     out[gid] = half(silu_g * float(up[gid]));
 }
 
+// f32 SwiGLU: reads f32 gate/up, writes f32 output.
+kernel void silu_mul_f32(
+    device const float* gate [[buffer(0)]],
+    device const float* up   [[buffer(1)]],
+    device       float* out  [[buffer(2)]],
+    constant     uint&  N    [[buffer(3)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= N) return;
+    float g = gate[gid];
+    float silu_g = g / (1.0f + exp(-g));
+    out[gid] = silu_g * up[gid];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Elementwise add (residual connections)
 //

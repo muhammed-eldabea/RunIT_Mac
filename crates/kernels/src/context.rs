@@ -64,6 +64,8 @@ pub const KERNEL_NAMES: &[&str] = &[
     // gemv_q4k.metal (f32 in/out)
     "gemv_q4k_f32in_f32out",
     "gemv_q4k_add_f32_f32in",
+    // activation.metal (f32 SwiGLU)
+    "silu_mul_f32",
     // activation.metal (f32 KV cache scatter)
     "kv_copy_to_cache_f32",
     // rope.metal (f32)

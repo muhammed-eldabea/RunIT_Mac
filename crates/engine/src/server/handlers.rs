@@ -78,6 +78,7 @@ pub async fn chat_completions(
         top_k:       req.top_k.unwrap_or(50),
         top_p:       req.top_p,
         seed:        req.seed.unwrap_or(42),
+        repetition_penalty: 1.1,
     };
 
     if req.stream {
@@ -190,13 +191,14 @@ fn generate_blocking(
     let mut rng  = SimpleRng::new(sampler_cfg.seed);
     let mut out  = Vec::<u32>::with_capacity(max_new);
 
-    let mut next = sample(&logits, &sampler_cfg, &mut rng);
+    let logits_f32: Vec<f32> = logits.iter().map(|x| x.to_f32()).collect();
+    let mut next = sample(&logits_f32, &sampler_cfg, &out, &mut rng);
     out.push(next);
 
     for pos in (prompt_len as u32)..(prompt_len + max_new) as u32 {
         if special.is_stop(next) { break; }
         let logits = executor.forward(next, pos, &mut kv).map_err(|e| e.to_string())?;
-        next = sample(&logits, &sampler_cfg, &mut rng);
+        next = sample(&logits, &sampler_cfg, &out, &mut rng);
         out.push(next);
     }
 
@@ -235,7 +237,10 @@ fn generate_stream(
 
     let special = SpecialTokens::default();
     let mut rng  = SimpleRng::new(sampler_cfg.seed);
-    let mut next = sample(&logits, &sampler_cfg, &mut rng);
+    let mut out_ids = Vec::<u32>::new();
+    let logits_f32: Vec<f32> = logits.iter().map(|x| x.to_f32()).collect();
+    let mut next = sample(&logits_f32, &sampler_cfg, &out_ids, &mut rng);
+    out_ids.push(next);
 
     for pos in (prompt_len as u32)..(prompt_len + max_new) as u32 {
         if special.is_stop(next) { break; }
@@ -257,7 +262,8 @@ fn generate_stream(
         }
 
         let logits = executor.forward(next, pos, &mut kv).map_err(|e| e.to_string())?;
-        next = sample(&logits, &sampler_cfg, &mut rng);
+        next = sample(&logits, &sampler_cfg, &out_ids, &mut rng);
+        out_ids.push(next);
     }
 
     // Final stop chunk

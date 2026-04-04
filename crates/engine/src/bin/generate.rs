@@ -63,6 +63,7 @@ fn main() -> anyhow::Result<()> {
     let mut top_p:           f32           = 0.9;
     let mut top_k:           usize         = 50;
     let mut seed:            u64           = 42;
+    let mut rep_penalty:     f32           = 1.1;
     let mut json_summary:    Option<String> = None; // path to write JSON metrics
 
     let mut i = 2;
@@ -79,6 +80,7 @@ fn main() -> anyhow::Result<()> {
             "--top-p"        if i + 1 < args.len() => { top_p         = args[i+1].parse()?; i += 2; }
             "--top-k"        if i + 1 < args.len() => { top_k         = args[i+1].parse()?; i += 2; }
             "--seed"         if i + 1 < args.len() => { seed          = args[i+1].parse()?; i += 2; }
+            "--rep-penalty"  if i + 1 < args.len() => { rep_penalty   = args[i+1].parse()?; i += 2; }
             "--json-summary" if i + 1 < args.len() => { json_summary  = Some(args[i+1].clone()); i += 2; }
             other => { eprintln!("Unknown argument: {other}"); i += 1; }
         }
@@ -157,7 +159,7 @@ fn main() -> anyhow::Result<()> {
     println!("KV    : {cache_desc}  {kv_mb:.1} MB  (max_seq={max_seq})");
 
     // ── Sampler config ────────────────────────────────────────────────────────
-    let sampler_cfg = SamplerConfig { temperature, top_k, top_p, seed };
+    let sampler_cfg = SamplerConfig { temperature, top_k, top_p, seed, repetition_penalty: rep_penalty };
 
     // ── Generation ────────────────────────────────────────────────────────────
     println!("\nGenerating {num_tokens} tokens (warmup={warmup_steps})…");
@@ -237,27 +239,21 @@ fn run_loop_std(
     step_times:   &mut Vec<std::time::Duration>,
     generated:    &mut Vec<u32>,
 ) -> anyhow::Result<()> {
-    use bare_metal_engine::sampler::{sample, greedy_argmax};
+    use bare_metal_engine::sampler::sample;
 
     // Process prompt token-by-token (no prefill — f32 decode path for precision)
     let (start_pos, mut next_token) = if prompt_ids.len() > 1 {
         let t0 = std::time::Instant::now();
-        // Feed each prompt token through the decode path to populate KV cache
         for (i, &tid) in prompt_ids[..prompt_ids.len()-1].iter().enumerate() {
             executor.forward_greedy(tid, i as u32, kv)?;
         }
-        // Get logits from last prompt token
         let last = *prompt_ids.last().unwrap();
         let pos = (prompt_ids.len() - 1) as u32;
         let logits = executor.forward(last, pos, kv)?;
         let elapsed = t0.elapsed();
         if warmup_steps == 0 { step_times.push(elapsed); }
 
-        let next = if sampler_cfg.temperature == 0.0 {
-            greedy_argmax(&logits)
-        } else {
-            sample(&logits, sampler_cfg, rng)
-        };
+        let next = sample(&logits, sampler_cfg, &[], rng);
         (prompt_ids.len() as u32, next)
     } else {
         (0_u32, prompt_ids[0])
@@ -266,45 +262,27 @@ fn run_loop_std(
     let mut step = 0usize;
     let mut pos  = start_pos;
 
-    let use_greedy = sampler_cfg.temperature == 0.0;
-
     while step < num_tokens {
         let t0 = std::time::Instant::now();
 
-        let sampled = if use_greedy {
-            // GPU-side argmax: avoids downloading 304KB logit vector
-            let token = executor.forward_greedy(next_token, pos, kv)?;
-            let elapsed = t0.elapsed();
+        // Always use forward() for f32 logits + repetition penalty support
+        let logits = executor.forward(next_token, pos, kv)?;
+        let elapsed = t0.elapsed();
 
-            if step >= warmup_steps {
-                step_times.push(elapsed);
-            }
+        if step >= warmup_steps {
+            step_times.push(elapsed);
+        }
 
-            let marker = if step < warmup_steps { "W" } else { " " };
-            println!(
-                " {:2}{} | {:6} | [   greedy argmax  ] | {:.2}",
-                step, marker, next_token,
-                elapsed.as_secs_f64() * 1000.0,
-            );
-            token
-        } else {
-            let logits = executor.forward(next_token, pos, kv)?;
-            let elapsed = t0.elapsed();
+        let max_l = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let min_l = logits.iter().copied().fold(f32::INFINITY,     f32::min);
+        let marker = if step < warmup_steps { "W" } else { " " };
+        println!(
+            " {:2}{} | {:6} | [{:8.2}, {:7.2}] | {:.2}",
+            step, marker, next_token, min_l, max_l,
+            elapsed.as_secs_f64() * 1000.0,
+        );
 
-            if step >= warmup_steps {
-                step_times.push(elapsed);
-            }
-
-            let max_l = logits.iter().map(|x| x.to_f32()).fold(f32::NEG_INFINITY, f32::max);
-            let min_l = logits.iter().map(|x| x.to_f32()).fold(f32::INFINITY,     f32::min);
-            let marker = if step < warmup_steps { "W" } else { " " };
-            println!(
-                " {:2}{} | {:6} | [{:8.2}, {:7.2}] | {:.2}",
-                step, marker, next_token, min_l, max_l,
-                elapsed.as_secs_f64() * 1000.0,
-            );
-            sample(&logits, sampler_cfg, rng)
-        };
+        let sampled = sample(&logits, sampler_cfg, generated.as_slice(), rng);
         generated.push(sampled);
 
         pos  += 1;
@@ -331,7 +309,7 @@ fn run_loop_tq(
     step_times:   &mut Vec<std::time::Duration>,
     generated:    &mut Vec<u32>,
 ) -> anyhow::Result<()> {
-    use bare_metal_engine::sampler::{greedy_argmax, sample};
+    use bare_metal_engine::sampler::sample;
 
     let mut pos: u32 = 0;
     let mut next_token = prompt_ids[0];
@@ -345,8 +323,9 @@ fn run_loop_tq(
             step_times.push(elapsed);
         }
 
-        let max_l = logits.iter().map(|x| x.to_f32()).fold(f32::NEG_INFINITY, f32::max);
-        let min_l = logits.iter().map(|x| x.to_f32()).fold(f32::INFINITY,     f32::min);
+        let logits_f32: Vec<f32> = logits.iter().map(|x| x.to_f32()).collect();
+        let max_l = logits_f32.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let min_l = logits_f32.iter().copied().fold(f32::INFINITY,     f32::min);
         let marker = if step < warmup_steps { "W" } else { " " };
         println!(
             " {:2}{} | {:6} | [{:8.2}, {:7.2}] | {:.2}",
@@ -354,11 +333,7 @@ fn run_loop_tq(
             elapsed.as_secs_f64() * 1000.0,
         );
 
-        let sampled = if sampler_cfg.temperature == 0.0 {
-            greedy_argmax(&logits)
-        } else {
-            sample(&logits, sampler_cfg, rng)
-        };
+        let sampled = sample(&logits_f32, sampler_cfg, generated.as_slice(), rng);
         generated.push(sampled);
         pos += 1;
 

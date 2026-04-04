@@ -22,7 +22,7 @@ use bare_metal_kernels::{
         mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
         rms_norm_f32_f32,
         rope_inplace_f16, rope_inplace_f32,
-        scale_accumulate_f16, silu_mul_f16,
+        scale_accumulate_f16, silu_mul_f16, silu_mul_f32,
         Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS,
     },
     error::KernelError,
@@ -260,12 +260,12 @@ impl DecodeScratch {
             attn_out: ctx.new_buffer(q_dim * 4),  // f32 attention output
             proj:     ctx.new_buffer(h * 2),
             x_norm2:  ctx.new_buffer(h * 4),  // f32 for full-precision GEMV input
-            gate:     ctx.new_buffer(ff_dim * 2),
-            up:       ctx.new_buffer(ff_dim * 2),
-            act:      ctx.new_buffer(ff_dim * 2),
+            gate:     ctx.new_buffer(ff_dim * 4),  // f32 FFN intermediates
+            up:       ctx.new_buffer(ff_dim * 4),  // f32 FFN intermediates
+            act:      ctx.new_buffer(ff_dim * 4),  // f32 FFN intermediates
             ffn_out:  ctx.new_buffer(h * 2),
             x_final:  ctx.new_buffer(h * 2),
-            logits:   ctx.new_buffer(cfg.vocab_size * 2),
+            logits:   ctx.new_buffer(cfg.vocab_size * 4),  // f32 logits for precise ranking
             argmax:   ctx.new_buffer(4),  // 1 × u32
             router_logits: ctx.new_buffer(cfg.num_experts.max(1) * 2),
             moe_out:       ctx.new_buffer(h * 2),  // f16 (accumulate per-expert, then add to f32 x)
@@ -1189,7 +1189,7 @@ impl Executor {
         token_id: u32,
         pos: u32,
         kv: &mut KvCache,
-    ) -> Result<Vec<f16>, ForwardError> {
+    ) -> Result<Vec<f32>, ForwardError> {
         let cfg = &self.config;
         let ctx = &self.ctx;
         let s   = &self.scratch;
@@ -1304,11 +1304,11 @@ impl Executor {
                 // Residual: f32 x += f16 moe_out
                 add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                // ── Dense FFN with f32 residual ──────────────────────────────
-                w.ffn_gate[l].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
-                silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
-                w.ffn_down[l].gemv_add_f32res(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+                // ── Dense FFN: full f32 intermediates ────────────────────────
+                w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
 
         }
@@ -1316,15 +1316,15 @@ impl Executor {
         // All layers done — advance KV cache position.
         kv.advance();
 
-        // ── 3. Final norm + lm_head (f32 throughout for precision) ────────────
+        // ── 3. Final norm + lm_head (full f32 logits for precise ranking) ────
         rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
                      cfg.rms_norm_eps, h as u32, 1)?;
-        self.weights.lm_head.gemv_f32in(ctx, &s.x_norm, &s.logits,
+        self.weights.lm_head.gemv_f32_f32out(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
 
-        // ── 4. Download logits — flush for the entire token ───────────────────
+        // ── 4. Download f32 logits ───────────────────────────────────────────
         ctx.flush();
-        let logits = download_f16_buf(&s.logits, cfg.vocab_size);
+        let logits = download_f32_buf(&s.logits, cfg.vocab_size);
         Ok(logits)
     }
 
@@ -1430,10 +1430,11 @@ impl Executor {
                 }
                 add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                w.ffn_gate[l].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
-                silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
-                w.ffn_down[l].gemv_add_f32res(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+                // Dense FFN: full f32 intermediates
+                w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
         }
 
@@ -1593,5 +1594,10 @@ pub(crate) fn topk_softmax(logits_buf: &metal::Buffer, num_experts: usize, top_k
 
 fn download_f16_buf(buf: &metal::Buffer, n: usize) -> Vec<f16> {
     let ptr = buf.contents() as *const f16;
+    (0..n).map(|i| unsafe { *ptr.add(i) }).collect()
+}
+
+fn download_f32_buf(buf: &metal::Buffer, n: usize) -> Vec<f32> {
+    let ptr = buf.contents() as *const f32;
     (0..n).map(|i| unsafe { *ptr.add(i) }).collect()
 }
