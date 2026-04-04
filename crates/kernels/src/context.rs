@@ -78,6 +78,10 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemm_f16",
     // rope.metal (batch)
     "rope_batch_inplace_f16",
+    // fused_qkv.metal (Q+K+V in one dispatch — 36× more TGs for better BW utilization)
+    "fused_qkv_q8_0_f32",
+    "fused_qkv_bias_q8_0_f32",
+    "fused_qkv_f16w_f32",
     // fused_ffn.metal (gate+up+silu in one dispatch — saves 48 dispatches/token)
     "fused_ffn_q8_0_f32",
     "fused_ffn_f16w_f32",

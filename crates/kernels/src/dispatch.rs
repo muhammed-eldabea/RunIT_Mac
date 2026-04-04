@@ -804,6 +804,95 @@ pub fn gemm_f16(
 // Fused kernels — reduce dispatch count by combining sequential operations
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Fused QKV: Q+K+V projections in ONE dispatch (Q8_0 weights, f32 I/O).
+pub fn fused_qkv_q8_0_f32(
+    ctx: &MetalContext,
+    w_q: &Buffer, w_k: &Buffer, w_v: &Buffer,
+    x_vec: &Buffer,
+    out_q: &Buffer, out_k: &Buffer, out_v: &Buffer,
+    q_dim: u32, kv_dim: u32, k: u32,
+) -> Result<()> {
+    let m_total = q_dim + kv_dim + kv_dim;
+    const MR: u64 = 4;
+    ctx.encode("fused_qkv_q8_0_f32", |enc| {
+        enc.set_buffer(0, Some(w_q),   0);
+        enc.set_buffer(1, Some(w_k),   0);
+        enc.set_buffer(2, Some(w_v),   0);
+        enc.set_buffer(3, Some(x_vec), 0);
+        enc.set_buffer(4, Some(out_q), 0);
+        enc.set_buffer(5, Some(out_k), 0);
+        enc.set_buffer(6, Some(out_v), 0);
+        enc.set_bytes(7, 4, &q_dim  as *const u32 as *const _);
+        enc.set_bytes(8, 4, &kv_dim as *const u32 as *const _);
+        enc.set_bytes(9, 4, &k      as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m_total as u64) + MR - 1) / MR, height: 1, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Fused QKV + bias: Q+K+V projections WITH bias add in ONE dispatch (Q8_0, f32).
+/// Replaces 6 dispatches (3 GEMVs + 3 bias-adds) with 1.
+pub fn fused_qkv_bias_q8_0_f32(
+    ctx: &MetalContext,
+    w_q: &Buffer, w_k: &Buffer, w_v: &Buffer,
+    x_vec: &Buffer,
+    out_q: &Buffer, out_k: &Buffer, out_v: &Buffer,
+    bias_q: &Buffer, bias_k: &Buffer, bias_v: &Buffer,
+    q_dim: u32, kv_dim: u32, k: u32,
+) -> Result<()> {
+    let m_total = q_dim + kv_dim + kv_dim;
+    const MR: u64 = 4;
+    ctx.encode("fused_qkv_bias_q8_0_f32", |enc| {
+        enc.set_buffer(0,  Some(w_q),    0);
+        enc.set_buffer(1,  Some(w_k),    0);
+        enc.set_buffer(2,  Some(w_v),    0);
+        enc.set_buffer(3,  Some(x_vec),  0);
+        enc.set_buffer(4,  Some(out_q),  0);
+        enc.set_buffer(5,  Some(out_k),  0);
+        enc.set_buffer(6,  Some(out_v),  0);
+        enc.set_buffer(7,  Some(bias_q), 0);
+        enc.set_buffer(8,  Some(bias_k), 0);
+        enc.set_buffer(9,  Some(bias_v), 0);
+        enc.set_bytes(10, 4, &q_dim  as *const u32 as *const _);
+        enc.set_bytes(11, 4, &kv_dim as *const u32 as *const _);
+        enc.set_bytes(12, 4, &k      as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m_total as u64) + MR - 1) / MR, height: 1, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Fused QKV: Q+K+V projections in ONE dispatch (f16 weights, f32 I/O).
+pub fn fused_qkv_f16w_f32(
+    ctx: &MetalContext,
+    w_q: &Buffer, w_k: &Buffer, w_v: &Buffer,
+    x_vec: &Buffer,
+    out_q: &Buffer, out_k: &Buffer, out_v: &Buffer,
+    q_dim: u32, kv_dim: u32, k: u32,
+) -> Result<()> {
+    let m_total = q_dim + kv_dim + kv_dim;
+    const MR: u64 = 4;
+    ctx.encode("fused_qkv_f16w_f32", |enc| {
+        enc.set_buffer(0, Some(w_q),   0);
+        enc.set_buffer(1, Some(w_k),   0);
+        enc.set_buffer(2, Some(w_v),   0);
+        enc.set_buffer(3, Some(x_vec), 0);
+        enc.set_buffer(4, Some(out_q), 0);
+        enc.set_buffer(5, Some(out_k), 0);
+        enc.set_buffer(6, Some(out_v), 0);
+        enc.set_bytes(7, 4, &q_dim  as *const u32 as *const _);
+        enc.set_bytes(8, 4, &kv_dim as *const u32 as *const _);
+        enc.set_bytes(9, 4, &k      as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m_total as u64) + MR - 1) / MR, height: 1, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+    })
+}
+
 /// Fused FFN: gate+up+silu with Q8_0 weights, f32 input/output.
 /// Replaces 3 dispatches (gate_gemv + up_gemv + silu_mul) with 1.
 pub fn fused_ffn_q8_0_f32(

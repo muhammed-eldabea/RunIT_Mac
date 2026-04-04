@@ -24,6 +24,7 @@ use bare_metal_kernels::{
         gemv_f16w_f32in_f32out_mr, gemv_add_f32_f16w_mr,
         gemv_q8_0_f32in_f32out_mr, gemv_q8_0_add_f32_f32in_mr,
         // Fused kernels (reduce dispatch count)
+        fused_qkv_q8_0_f32, fused_qkv_bias_q8_0_f32, fused_qkv_f16w_f32,
         fused_ffn_q8_0_f32, fused_ffn_f16w_f32, fused_rope_qk_f32,
         kv_copy_to_cache_f16, kv_copy_to_cache_f32,
         mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
@@ -1294,7 +1295,12 @@ impl Executor {
         }
 
         let _profile = std::env::var("PROFILE_FORWARD").is_ok();
+        let _profile_detail = std::env::var("PROFILE_DETAIL").is_ok();
         let _t0 = std::time::Instant::now();
+        let mut _t_qkv = 0.0f64;
+        let mut _t_attn = 0.0f64;
+        let mut _t_ffn = 0.0f64;
+        let mut _t_lmhead = 0.0f64;
 
         // ── 1. Token embedding lookup ──────────────────────────────────────
         let h = cfg.hidden_size;
@@ -1332,28 +1338,51 @@ impl Executor {
                              cfg.rms_norm_eps, h as u32, 1)?;
             }
 
-            // b) Q projection: f32 input → f32 output (full precision)
-            w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_q_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?;
-            }
+            let _ts = std::time::Instant::now();
 
-            // c) K projection: f32 input → f32 output (full precision)
-            w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_k_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?;
-            }
-
-            // d) V projection: f32 input → f32 output (full precision)
-            w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_v_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
+            // b-d) FUSED Q+K+V + bias: 1 dispatch instead of 6
+            match (&w.attn_q[l], &w.attn_k[l], &w.attn_v[l],
+                   &w.attn_q_bias[l], &w.attn_k_bias[l], &w.attn_v_bias[l]) {
+                // Q8_0 with biases (Qwen path: most common)
+                (WeightBuf::Q8_0 { raw: rq, .. }, WeightBuf::Q8_0 { raw: rk, .. }, WeightBuf::Q8_0 { raw: rv, .. },
+                 Some(bq), Some(bk), Some(bv)) => {
+                    fused_qkv_bias_q8_0_f32(ctx, rq, rk, rv, &s.x_norm,
+                                            &s.q, &s.k, &s.v,
+                                            bq, bk, bv,
+                                            q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                // Q8_0 without biases
+                (WeightBuf::Q8_0 { raw: rq, .. }, WeightBuf::Q8_0 { raw: rk, .. }, WeightBuf::Q8_0 { raw: rv, .. },
+                 None, None, None) => {
+                    fused_qkv_q8_0_f32(ctx, rq, rk, rv, &s.x_norm,
+                                       &s.q, &s.k, &s.v,
+                                       q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                // F16 without biases
+                (WeightBuf::F16(bq), WeightBuf::F16(bk), WeightBuf::F16(bv),
+                 None, None, None) => {
+                    fused_qkv_f16w_f32(ctx, bq, bk, bv, &s.x_norm,
+                                       &s.q, &s.k, &s.v,
+                                       q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                // Fallback: separate dispatches
+                _ => {
+                    w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_q_bias[l] { add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?; }
+                    w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_k_bias[l] { add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?; }
+                    w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_v_bias[l] { add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?; }
+                }
             }
 
             // e) Fused RoPE: apply to BOTH Q and K in ONE dispatch
             fused_rope_qk_f32(ctx, &s.q, &s.k, hd,
                               cfg.num_attention_heads as u32, n_kv,
                               pos, cfg.rope_theta)?;
+
+            if _profile_detail { ctx.flush(); _t_qkv += _ts.elapsed().as_secs_f64() * 1000.0; }
+            let _ts = std::time::Instant::now();
 
             // f) Write f32 K/V into f32 cache — GPU-side scatter
             kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
@@ -1368,6 +1397,9 @@ impl Executor {
 
             // h) Output projection: f32 attn_out + f32 residual → f32 output
             w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+
+            if _profile_detail { ctx.flush(); _t_attn += _ts.elapsed().as_secs_f64() * 1000.0; }
+            let _ts = std::time::Instant::now();
 
             // i) FFN pre-norm (f32 → f32)
             if self.norm_f32 {
@@ -1435,6 +1467,8 @@ impl Executor {
                 w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
 
+            if _profile_detail { ctx.flush(); _t_ffn += _ts.elapsed().as_secs_f64() * 1000.0; }
+
             // Per-layer diagnostic: dump x[0..8] after each layer
             if std::env::var("DEBUG_LAYERS").is_ok() {
                 ctx.flush();
@@ -1448,6 +1482,7 @@ impl Executor {
         kv.advance();
 
         // ── 3. Final norm + lm_head (full f32 logits for precise ranking) ────
+        let _ts = std::time::Instant::now();
         if self.norm_f32 {
             rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
                          cfg.rms_norm_eps, h as u32, 1)?;
@@ -1457,6 +1492,8 @@ impl Executor {
         }
         self.weights.lm_head.gemv_f32_f32out(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
+
+        if _profile_detail { ctx.flush(); _t_lmhead = _ts.elapsed().as_secs_f64() * 1000.0; }
 
         // ── 4. Download f32 logits ───────────────────────────────────────────
         let _t_encode = _t0.elapsed();
@@ -1468,6 +1505,11 @@ impl Executor {
             let total_ms = _t_total.as_secs_f64() * 1000.0;
             eprintln!("PROFILE pos={} cpu_encode={:.3}ms gpu_exec={:.3}ms total={:.3}ms",
                       pos, cpu_ms, gpu_ms, total_ms);
+        }
+        if _profile_detail {
+            eprintln!("DETAIL  pos={} qkv={:.2}ms attn={:.2}ms ffn={:.2}ms lmhead={:.2}ms total={:.2}ms",
+                      pos, _t_qkv, _t_attn, _t_ffn, _t_lmhead,
+                      _t_qkv + _t_attn + _t_ffn + _t_lmhead);
         }
         let logits = download_f32_buf(&s.logits, cfg.vocab_size);
         Ok(logits)
@@ -1526,18 +1568,34 @@ impl Executor {
                              cfg.rms_norm_eps, h as u32, 1)?;
             }
 
-            // f32 Q/K/V projections
-            w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_q_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?;
-            }
-            w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_k_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?;
-            }
-            w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
-            if let Some(bias) = &w.attn_v_bias[l] {
-                add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
+            // f32 FUSED Q+K+V + bias (1 dispatch instead of 6)
+            match (&w.attn_q[l], &w.attn_k[l], &w.attn_v[l],
+                   &w.attn_q_bias[l], &w.attn_k_bias[l], &w.attn_v_bias[l]) {
+                (WeightBuf::Q8_0 { raw: rq, .. }, WeightBuf::Q8_0 { raw: rk, .. }, WeightBuf::Q8_0 { raw: rv, .. },
+                 Some(bq), Some(bk), Some(bv)) => {
+                    fused_qkv_bias_q8_0_f32(ctx, rq, rk, rv, &s.x_norm,
+                                            &s.q, &s.k, &s.v, bq, bk, bv,
+                                            q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                (WeightBuf::Q8_0 { raw: rq, .. }, WeightBuf::Q8_0 { raw: rk, .. }, WeightBuf::Q8_0 { raw: rv, .. },
+                 None, None, None) => {
+                    fused_qkv_q8_0_f32(ctx, rq, rk, rv, &s.x_norm,
+                                       &s.q, &s.k, &s.v,
+                                       q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                (WeightBuf::F16(bq), WeightBuf::F16(bk), WeightBuf::F16(bv), None, None, None) => {
+                    fused_qkv_f16w_f32(ctx, bq, bk, bv, &s.x_norm,
+                                       &s.q, &s.k, &s.v,
+                                       q_dim as u32, kv_dim as u32, h as u32)?;
+                }
+                _ => {
+                    w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_q_bias[l] { add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?; }
+                    w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_k_bias[l] { add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?; }
+                    w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+                    if let Some(bias) = &w.attn_v_bias[l] { add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?; }
+                }
             }
 
             // f32 Fused QK RoPE (1 dispatch instead of 2)
