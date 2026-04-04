@@ -64,6 +64,8 @@ fn main() -> anyhow::Result<()> {
     let mut top_k:           usize         = 50;
     let mut seed:            u64           = 42;
     let mut rep_penalty:     f32           = 1.1;
+    let mut speculative:     usize         = 0;    // 0 = off, N = draft N tokens
+    let mut draft_layers:    usize         = 6;    // layers for draft model
     let mut json_summary:    Option<String> = None; // path to write JSON metrics
 
     let mut i = 2;
@@ -81,6 +83,8 @@ fn main() -> anyhow::Result<()> {
             "--top-k"        if i + 1 < args.len() => { top_k         = args[i+1].parse()?; i += 2; }
             "--seed"         if i + 1 < args.len() => { seed          = args[i+1].parse()?; i += 2; }
             "--rep-penalty"  if i + 1 < args.len() => { rep_penalty   = args[i+1].parse()?; i += 2; }
+            "--speculative"  if i + 1 < args.len() => { speculative   = args[i+1].parse()?; i += 2; }
+            "--draft-layers" if i + 1 < args.len() => { draft_layers  = args[i+1].parse()?; i += 2; }
             "--json-summary" if i + 1 < args.len() => { json_summary  = Some(args[i+1].clone()); i += 2; }
             other => { eprintln!("Unknown argument: {other}"); i += 1; }
         }
@@ -181,6 +185,11 @@ fn main() -> anyhow::Result<()> {
         run_loop_tq(&executor, &mut kv, &prompt_ids, num_tokens, warmup_steps,
                     &sampler_cfg, &special, &mut rng,
                     &mut step_times, &mut generated_ids)?;
+    } else if speculative > 0 {
+        let mut kv = KvCache::new(&executor.ctx, cfg, max_seq);
+        run_loop_speculative(&executor, &mut kv, &prompt_ids, num_tokens, warmup_steps,
+                             speculative, draft_layers, &special,
+                             &mut step_times, &mut generated_ids, &tokenizer)?;
     } else {
         let mut kv = KvCache::new(&executor.ctx, cfg, max_seq);
         run_loop_std(&executor, &mut kv, &prompt_ids, num_tokens, warmup_steps,
@@ -343,6 +352,97 @@ fn run_loop_std(
         if special.is_stop(sampled) { break; }
         next_token = sampled;
     }
+    Ok(())
+}
+
+// ── Speculative decoding loop (early-exit draft + batched verify) ──────────
+
+#[cfg(target_os = "macos")]
+#[allow(clippy::too_many_arguments)]
+fn run_loop_speculative(
+    executor:      &bare_metal_engine::forward::Executor,
+    kv:            &mut bare_metal_engine::kv_cache::KvCache,
+    prompt_ids:    &[u32],
+    num_tokens:    usize,
+    warmup_steps:  usize,
+    draft_count:   usize,
+    draft_layers:  usize,
+    special:       &bare_metal_engine::chat_template::SpecialTokens,
+    step_times:    &mut Vec<std::time::Duration>,
+    generated:     &mut Vec<u32>,
+    tokenizer:     &Option<bare_metal_tokenizer::Tokenizer>,
+) -> anyhow::Result<()> {
+    println!("Speculative decoding: draft={draft_count} tokens, {draft_layers}/{} layers",
+             executor.config.num_hidden_layers);
+
+    // Process prompt token-by-token first
+    for (i, &tid) in prompt_ids[..prompt_ids.len()-1].iter().enumerate() {
+        executor.forward_greedy(tid, i as u32, kv)?;
+    }
+
+    let mut pos = (prompt_ids.len() - 1) as u32;
+    let mut next_token = *prompt_ids.last().unwrap();
+    let mut total_generated = 0usize;
+    let mut total_accepted = 0usize;
+    let mut total_drafted = 0usize;
+
+    while total_generated < num_tokens {
+        let t0 = std::time::Instant::now();
+
+        // ── Draft phase: generate N tokens with early-exit model ───────
+        let draft_start_pos = kv.seq_len() as usize;
+        let mut draft_tokens = Vec::with_capacity(draft_count);
+        let mut draft_tok = next_token;
+
+        for d in 0..draft_count {
+            let dt = executor.forward_draft(draft_tok, pos + d as u32, kv, draft_layers)?;
+            draft_tokens.push(dt);
+            if special.is_stop(dt) { break; }
+            draft_tok = dt;
+        }
+        total_drafted += draft_tokens.len();
+
+        // ── Verify phase: run full model on all draft tokens (GEMM) ────
+        let (accepted, correct_next) = executor.verify_draft(
+            next_token, &draft_tokens, draft_start_pos, kv)?;
+
+        let elapsed = t0.elapsed();
+        total_accepted += accepted;
+
+        // Commit accepted tokens
+        for i in 0..accepted {
+            generated.push(draft_tokens[i]);
+        }
+        // Always get the correct next token from verify
+        generated.push(correct_next);
+        let tokens_this_cycle = accepted + 1;
+        total_generated += tokens_this_cycle;
+
+        // Update position
+        pos = kv.seq_len() as u32;
+        next_token = correct_next;
+
+        if total_generated >= warmup_steps {
+            step_times.push(elapsed);
+        }
+
+        let ms = elapsed.as_secs_f64() * 1000.0;
+        let tps = tokens_this_cycle as f64 / (ms / 1000.0);
+        let marker = if total_generated < warmup_steps { "W" } else { " " };
+        println!(
+            " {:2}{} | +{}/{} tok | accept={:.0}% | {:.2} ms ({:.0} tok/s)",
+            total_generated, marker,
+            tokens_this_cycle, draft_tokens.len(),
+            if draft_tokens.is_empty() { 0.0 } else { accepted as f64 / draft_tokens.len() as f64 * 100.0 },
+            ms, tps,
+        );
+
+        if special.is_stop(correct_next) { break; }
+    }
+
+    println!("\nSpeculative stats: drafted={total_drafted} accepted={total_accepted} rate={:.0}%",
+             if total_drafted > 0 { total_accepted as f64 / total_drafted as f64 * 100.0 } else { 0.0 });
+
     Ok(())
 }
 

@@ -1631,6 +1631,336 @@ impl Executor {
         Ok(token)
     }
 
+    // ═══════════════════════════════════════════════════════════════════════
+    // Speculative decoding: early-exit draft + batched verify
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Draft one token using only the first `draft_layers` transformer layers.
+    /// Much cheaper than full forward (~25% cost for 6/24 layers).
+    /// Returns greedy argmax token. Updates `kv` for draft layers only.
+    pub fn forward_draft(
+        &self,
+        token_id: u32,
+        pos: u32,
+        kv: &mut KvCache,
+        draft_layers: usize,
+    ) -> Result<u32, ForwardError> {
+        let cfg = &self.config;
+        let ctx = &self.ctx;
+        let s   = &self.scratch;
+
+        if token_id >= cfg.vocab_size as u32 {
+            return Err(ForwardError::InvalidTokenId(token_id));
+        }
+
+        // Embedding
+        let h = cfg.hidden_size;
+        unsafe {
+            let dst = s.x.contents() as *mut f32;
+            if self.tok_emb_f32 {
+                let src = (self.weights.tok_emb.contents() as *const f32)
+                    .add(token_id as usize * h);
+                std::ptr::copy_nonoverlapping(src, dst, h);
+            } else {
+                let src = (self.weights.tok_emb.contents() as *const f16)
+                    .add(token_id as usize * h);
+                for i in 0..h { *dst.add(i) = (*src.add(i)).to_f32(); }
+            }
+        }
+
+        let q_dim  = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let ff_dim = self.expert_ff_dim;
+        let kv_len_after = pos + 1;
+        let max_seq = kv.max_seq_len();
+        let hd = cfg.head_dim as u32;
+        let n_kv = cfg.num_key_value_heads as u32;
+
+        // Run only draft_layers (not all layers)
+        let n_layers = draft_layers.min(cfg.num_hidden_layers);
+        for l in 0..n_layers {
+            let w = &self.weights;
+
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
+
+            w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+            if let Some(bias) = &w.attn_q_bias[l] {
+                add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?;
+            }
+            w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+            if let Some(bias) = &w.attn_k_bias[l] {
+                add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?;
+            }
+            w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+            if let Some(bias) = &w.attn_v_bias[l] {
+                add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
+            }
+
+            fused_rope_qk_f32(ctx, &s.q, &s.k, hd,
+                              cfg.num_attention_heads as u32, n_kv,
+                              pos, cfg.rope_theta)?;
+
+            kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
+            kv_copy_to_cache_f32(ctx, &s.v, kv.v_buf(l), pos, max_seq, hd, n_kv)?;
+
+            decode_attention_f32(
+                ctx, &s.q, kv.k_buf(l), kv.v_buf(l), &s.attn_out,
+                1, kv_len_after, cfg.num_attention_heads as u32, n_kv, hd, max_seq,
+            )?;
+
+            w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
+
+            // Use fused FFN where possible
+            match (&w.ffn_gate[l], &w.ffn_up[l]) {
+                (WeightBuf::Q8_0 { raw: g_raw, .. }, WeightBuf::Q8_0 { raw: u_raw, .. }) => {
+                    fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                       ff_dim as u32, h as u32)?;
+                }
+                (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {
+                    fused_ffn_f16w_f32(ctx, g_buf, u_buf, &s.x_norm2, &s.act,
+                                       ff_dim as u32, h as u32)?;
+                }
+                _ => {
+                    w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                    w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                    silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                }
+            }
+            w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+        }
+
+        kv.advance();
+
+        // Final norm + lm_head (same weights as full model)
+        if self.norm_f32 {
+            rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        } else {
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        }
+        self.weights.lm_head.gemv_f32in(ctx, &s.x_norm, &s.logits,
+                 cfg.vocab_size as u32, h as u32)?;
+        argmax_f16(ctx, &s.logits, &s.argmax, cfg.vocab_size as u32)?;
+        ctx.flush();
+        let token = unsafe { *(s.argmax.contents() as *const u32) };
+        Ok(token)
+    }
+
+    /// Verify a batch of draft tokens using full-model prefill (GEMM).
+    /// Returns the index of the first rejected token and the correct token
+    /// at that position. All tokens before the rejection index are accepted.
+    ///
+    /// Returns `(accepted_count, correct_next_token)`:
+    ///   - `accepted_count == draft_tokens.len()` means all accepted
+    ///   - The correct_next_token is always valid (from verify logits)
+    pub fn verify_draft(
+        &self,
+        prompt_token: u32,
+        draft_tokens: &[u32],
+        start_pos: usize,
+        kv: &mut KvCache,
+    ) -> Result<(usize, u32), ForwardError> {
+        // Build verification sequence: [prompt_token, draft_0, draft_1, ...]
+        let mut verify_seq: Vec<u32> = Vec::with_capacity(1 + draft_tokens.len());
+        verify_seq.push(prompt_token);
+        verify_seq.extend_from_slice(draft_tokens);
+        let seq_len = verify_seq.len();
+
+        let cfg = &self.config;
+        let ctx = &self.ctx;
+        let opts = metal::MTLResourceOptions::StorageModeShared;
+        let h = cfg.hidden_size;
+        let q_dim  = cfg.num_attention_heads * cfg.head_dim;
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
+        let ff_dim = self.expert_ff_dim;
+
+        // Reset KV cache to start_pos (discard draft entries)
+        kv.set_seq_len(start_pos);
+
+        // ── 1. Embed all tokens → X [seq, h] f16 ──────────────────────────
+        let x_buf = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+        {
+            let emb_row = if self.tok_emb_f32 { h * 4 } else { h * 2 };
+            let dst = x_buf.contents() as *mut u8;
+            for (i, &tid) in verify_seq.iter().enumerate() {
+                if self.tok_emb_f32 {
+                    // Tok emb is f32 — convert row to f16 for GEMM
+                    let src = unsafe { (self.weights.tok_emb.contents() as *const f32)
+                        .add(tid as usize * h) };
+                    let dst_f16 = unsafe { (dst as *mut f16).add(i * h) };
+                    for j in 0..h {
+                        unsafe { *dst_f16.add(j) = f16::from_f32(*src.add(j)); }
+                    }
+                } else {
+                    let src = unsafe { (self.weights.tok_emb.contents() as *const u8)
+                        .add(tid as usize * h * 2) };
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(src, dst.add(i * h * 2), h * 2);
+                    }
+                }
+            }
+        }
+
+        // Scratch buffers for [seq, dim]
+        let x_norm_buf   = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+        let q_buf        = ctx.device.new_buffer((seq_len * q_dim * 2) as u64, opts);
+        let k_buf        = ctx.device.new_buffer((seq_len * kv_dim * 2) as u64, opts);
+        let v_buf        = ctx.device.new_buffer((seq_len * kv_dim * 2) as u64, opts);
+        let attn_out_buf = ctx.device.new_buffer((seq_len * q_dim * 2) as u64, opts);
+        let proj_buf     = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+        let x_norm2_buf  = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+        let gate_buf     = ctx.device.new_buffer((seq_len * ff_dim * 2) as u64, opts);
+        let up_buf       = ctx.device.new_buffer((seq_len * ff_dim * 2) as u64, opts);
+        let act_buf      = ctx.device.new_buffer((seq_len * ff_dim * 2) as u64, opts);
+        let ffn_out_buf  = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+
+        // ── 2. Transformer layers (GEMM path) ─────────────────────────────
+        use bare_metal_kernels::dispatch::{
+            gemm_f16, rms_norm_f16, rope_batch_inplace_f16,
+            flash_attention_f16, add_f16, silu_mul_f16,
+            add_bias_broadcast_f16,
+        };
+
+        let kv_start = start_pos;
+        for l in 0..cfg.num_hidden_layers {
+            let w = &self.weights;
+
+            rms_norm_f16(ctx, &x_buf, &x_norm_buf, &w.attn_norm[l],
+                         cfg.rms_norm_eps, h as u32, seq_len as u32)?;
+
+            gemm_f16(ctx, &x_norm_buf, w.attn_q[l].f16_buf(), &q_buf,
+                     seq_len as u32, q_dim as u32, h as u32)?;
+            gemm_f16(ctx, &x_norm_buf, w.attn_k[l].f16_buf(), &k_buf,
+                     seq_len as u32, kv_dim as u32, h as u32)?;
+            gemm_f16(ctx, &x_norm_buf, w.attn_v[l].f16_buf(), &v_buf,
+                     seq_len as u32, kv_dim as u32, h as u32)?;
+
+            if let Some(bias) = &w.attn_q_bias[l] {
+                add_bias_broadcast_f16(ctx, &q_buf, bias, seq_len as u32, q_dim as u32)?;
+            }
+            if let Some(bias) = &w.attn_k_bias[l] {
+                add_bias_broadcast_f16(ctx, &k_buf, bias, seq_len as u32, kv_dim as u32)?;
+            }
+            if let Some(bias) = &w.attn_v_bias[l] {
+                add_bias_broadcast_f16(ctx, &v_buf, bias, seq_len as u32, kv_dim as u32)?;
+            }
+
+            rope_batch_inplace_f16(ctx, &q_buf, cfg.head_dim as u32,
+                                   cfg.num_attention_heads as u32,
+                                   kv_start as u32, cfg.rope_theta, seq_len as u32)?;
+            rope_batch_inplace_f16(ctx, &k_buf, cfg.head_dim as u32,
+                                   cfg.num_key_value_heads as u32,
+                                   kv_start as u32, cfg.rope_theta, seq_len as u32)?;
+
+            // Populate KV cache for all positions
+            ctx.flush();
+            let kh = cfg.num_key_value_heads;
+            let hd = cfg.head_dim;
+            let k_ptr = k_buf.contents() as *const f16;
+            let v_ptr = v_buf.contents() as *const f16;
+            for pos in 0..seq_len {
+                let k_slice: Vec<f16> = unsafe {
+                    (0..kh * hd).map(|i| *k_ptr.add(pos * kh * hd + i)).collect()
+                };
+                let v_slice: Vec<f16> = unsafe {
+                    (0..kh * hd).map(|i| *v_ptr.add(pos * kh * hd + i)).collect()
+                };
+                kv.write_at(l, kv_start + pos, &k_slice, &v_slice);
+            }
+
+            let total_kv = (kv_start + seq_len) as u32;
+            flash_attention_f16(
+                ctx, &q_buf, kv.k_buf(l), kv.v_buf(l), &attn_out_buf,
+                1, seq_len as u32, total_kv,
+                cfg.num_attention_heads as u32,
+                cfg.num_key_value_heads as u32,
+                cfg.head_dim as u32,
+                kv.max_seq_len(),
+            )?;
+
+            gemm_f16(ctx, &attn_out_buf, w.attn_out[l].f16_buf(), &proj_buf,
+                     seq_len as u32, h as u32, q_dim as u32)?;
+            add_f16(ctx, &x_buf, &proj_buf, &x_buf, (seq_len * h) as u32)?;
+
+            rms_norm_f16(ctx, &x_buf, &x_norm2_buf, &w.ffn_norm[l],
+                         cfg.rms_norm_eps, h as u32, seq_len as u32)?;
+
+            gemm_f16(ctx, &x_norm2_buf, w.ffn_gate[l].f16_buf(), &gate_buf,
+                     seq_len as u32, ff_dim as u32, h as u32)?;
+            gemm_f16(ctx, &x_norm2_buf, w.ffn_up[l].f16_buf(), &up_buf,
+                     seq_len as u32, ff_dim as u32, h as u32)?;
+            silu_mul_f16(ctx, &gate_buf, &up_buf, &act_buf, (seq_len * ff_dim) as u32)?;
+            gemm_f16(ctx, &act_buf, w.ffn_down[l].f16_buf(), &ffn_out_buf,
+                     seq_len as u32, h as u32, ff_dim as u32)?;
+            add_f16(ctx, &x_buf, &ffn_out_buf, &x_buf, (seq_len * h) as u32)?;
+        }
+
+        kv.set_seq_len(kv_start + seq_len);
+
+        // ── 3. Batched lm_head: norm ALL positions + GEMM → logits [seq, vocab]
+        // ONE norm dispatch + ONE GEMM dispatch + ONE flush (was: seq × flush!)
+        let vocab = cfg.vocab_size;
+        let x_norm_all = ctx.device.new_buffer((seq_len * h * 2) as u64, opts);
+        rms_norm_f16(ctx, &x_buf, &x_norm_all, &self.weights.output_norm,
+                     cfg.rms_norm_eps, h as u32, seq_len as u32)?;
+
+        // GEMM: [seq, h] × [vocab, h]^T = [seq, vocab] f16
+        let logit_buf = ctx.device.new_buffer((seq_len * vocab * 2) as u64, opts);
+        gemm_f16(ctx, &x_norm_all, self.weights.lm_head.f16_buf(), &logit_buf,
+                 seq_len as u32, vocab as u32, h as u32)?;
+
+        ctx.flush();
+
+        // CPU-side: argmax per position and compare with draft
+        let logit_ptr = logit_buf.contents() as *const f16;
+        let mut accepted = 0usize;
+        let mut correct_next = 0u32;
+
+        for pos_idx in 0..seq_len {
+            // Find argmax for this position
+            let row = unsafe { std::slice::from_raw_parts(logit_ptr.add(pos_idx * vocab), vocab) };
+            let mut best_idx = 0u32;
+            let mut best_val = f32::NEG_INFINITY;
+            for (j, &v) in row.iter().enumerate() {
+                let fv = v.to_f32();
+                if fv > best_val {
+                    best_val = fv;
+                    best_idx = j as u32;
+                }
+            }
+
+            if pos_idx < draft_tokens.len() {
+                if best_idx == draft_tokens[pos_idx] {
+                    accepted += 1;
+                } else {
+                    correct_next = best_idx;
+                    kv.set_seq_len(kv_start + pos_idx + 1);
+                    return Ok((accepted, correct_next));
+                }
+            } else {
+                correct_next = best_idx;
+            }
+        }
+
+        // All draft tokens accepted
+        Ok((accepted, correct_next))
+    }
+
     /// Run one decode step using a TurboQuant KV cache (Phase 5).
     ///
     /// Identical to `forward()` except attention reads from materialised F16
