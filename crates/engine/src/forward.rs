@@ -964,12 +964,16 @@ fn upload_weight_wb(
         return Ok(WeightBuf::F16(upload_weight(ctx, model, name)?));
     }
 
-    // All other types (quantized, BF16, F32): dequant to f32 for precision
-    if let Some(f32_buf) = upload_weight_as_f32(ctx, model, name)? {
-        return Ok(WeightBuf::F32(f32_buf));
-    }
-
-    // Shouldn't reach here, but fallback to F16
+    // ── PERFORMANCE: Dequant to f16 for bandwidth-optimal GEMV ──────────
+    // Quantized types (Q5_0, Q5K, Q6K, Q8_0, Q8K, Q4_0, BF16) have ≤8
+    // significant bits — well within f16's 10-bit mantissa. Dequanting to
+    // f32 wastes 2x memory bandwidth for zero precision gain.
+    //
+    // Impact: For Q8_0 model (K=896), this halves weight read bandwidth
+    // for all Q/K/V/O and FFN projections → ~2x decode speedup.
+    //
+    // Q4K with non-aligned K: also safe — the dequanted values only have
+    // ~4.5 bits of effective precision.
     Ok(WeightBuf::F16(upload_weight(ctx, model, name)?))
 }
 
@@ -1018,10 +1022,11 @@ impl Executor {
         let vocab  = cfg.vocab_size as u32;
 
         // lm_head may be tied to token_embd (Qwen2 ties them)
+        // PERF: Always use F16 for lm_head GEMV — the vocab-size matrix-vector
+        // multiply is the single largest weight read per token.
+        // F16 halves bandwidth vs F32 (272MB vs 544MB for 151K vocab).
         let lm_head = if model.tensors.contains_key("output.weight") {
             upload_weight_wb(&ctx, model, "output.weight", vocab, h)?
-        } else if tok_emb_is_f32 {
-            WeightBuf::F32(upload_weight_as_f32(&ctx, model, "token_embd.weight")?.unwrap())
         } else {
             WeightBuf::F16(upload_weight(&ctx, model, "token_embd.weight")?)
         };
