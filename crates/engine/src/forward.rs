@@ -20,6 +20,9 @@ use bare_metal_kernels::{
         gemv_f32_f32out, gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
         gemv_q8_0_f32in_f32out, gemv_q8_0_add_f32_f32in,
         gemv_q8_0_f32in, gemv_q8_0_f16, gemv_q8_0_add_f16, gemv_q8_0_add_f32res_f16,
+        gemv_q4_0_f32in_f32out, gemv_q4_0_add_f32_f32in,
+        gemv_q4_0_f32in, gemv_q4_0_f16, gemv_q4_0_add_f16,
+        fused_ffn_q4_0_f32,
         // Multi-row GEMV (4 rows/TG, 128 threads) for M ≥ 128
         gemv_f16w_f32in_f32out_mr, gemv_add_f32_f16w_mr,
         gemv_q8_0_f32in_f32out_mr, gemv_q8_0_add_f32_f32in_mr,
@@ -31,7 +34,7 @@ use bare_metal_kernels::{
         rms_norm_f32_f32, rms_norm_f32_f32_f32g,
         rope_inplace_f16, rope_inplace_f32,
         scale_accumulate_f16, silu_mul_f16, silu_mul_f32,
-        Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS, Q8_0_BLOCK_ELEMS,
+        Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS, Q8_0_BLOCK_ELEMS, Q4_0_BLOCK_ELEMS,
     },
     error::KernelError,
 };
@@ -71,8 +74,10 @@ pub(crate) enum WeightBuf {
     /// Q4K weights: raw packed buffer for fused GEMV + dequanted F16 for GEMM prefill.
     Q4K { raw: metal::Buffer, f16: metal::Buffer },
     /// Q8_0 weights: raw packed buffer (1.06 bytes/elem) for fused GEMV + F16 for GEMM.
-    /// Uses 47% less bandwidth than F16 GEMV — the #1 optimization for Q8_0 models.
     Q8_0 { raw: metal::Buffer, f16: metal::Buffer },
+    /// Q4_0 weights: raw packed buffer (0.56 bytes/elem) — ultimate bandwidth optimization.
+    /// 47% less bandwidth than Q8_0, 72% less than F16.
+    Q4_0 { raw: metal::Buffer, f16: metal::Buffer },
 }
 
 impl WeightBuf {
@@ -90,6 +95,7 @@ impl WeightBuf {
             WeightBuf::F32(buf) => gemv_f32w(ctx, buf, input, output, m, k)?,
             WeightBuf::Q4K { raw, .. } => gemv_q4k_f16(ctx, raw, input, output, m, k)?,
             WeightBuf::Q8_0 { raw, .. } => gemv_q8_0_f16(ctx, raw, input, output, m, k)?,
+            WeightBuf::Q4_0 { raw, .. } => gemv_q4_0_f16(ctx, raw, input, output, m, k)?,
         }
         Ok(())
     }
@@ -109,6 +115,7 @@ impl WeightBuf {
             WeightBuf::F32(buf) => gemv_add_f32w(ctx, buf, input, output, residual, m, k)?,
             WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f16(ctx, raw, input, output, residual, m, k)?,
             WeightBuf::Q8_0 { raw, .. } => gemv_q8_0_add_f16(ctx, raw, input, output, residual, m, k)?,
+            WeightBuf::Q4_0 { raw, .. } => gemv_q4_0_add_f16(ctx, raw, input, output, residual, m, k)?,
         }
         Ok(())
     }
@@ -145,6 +152,9 @@ impl WeightBuf {
                     gemv_q8_0_f32in_f32out(ctx, raw, input, output, m, k)?;
                 }
             }
+            WeightBuf::Q4_0 { raw, .. } => {
+                gemv_q4_0_f32in_f32out(ctx, raw, input, output, m, k)?;
+            }
         }
         Ok(())
     }
@@ -163,6 +173,7 @@ impl WeightBuf {
             WeightBuf::F32(buf) => gemv_f32w_f32in(ctx, buf, input, output, m, k)?,
             WeightBuf::Q4K { f16, .. } => gemv_f16w_f32in(ctx, f16, input, output, m, k)?,
             WeightBuf::Q8_0 { raw, .. } => gemv_q8_0_f32in(ctx, raw, input, output, m, k)?,
+            WeightBuf::Q4_0 { raw, .. } => gemv_q4_0_f32in(ctx, raw, input, output, m, k)?,
         }
         Ok(())
     }
@@ -196,6 +207,9 @@ impl WeightBuf {
                     gemv_q8_0_add_f32_f32in(ctx, raw, input, output, residual, m, k)?;
                 }
             }
+            WeightBuf::Q4_0 { raw, .. } => {
+                gemv_q4_0_add_f32_f32in(ctx, raw, input, output, residual, m, k)?;
+            }
         }
         Ok(())
     }
@@ -215,6 +229,7 @@ impl WeightBuf {
             WeightBuf::F32(buf) => gemv_add_f32res_f32w(ctx, buf, input, output, residual, m, k)?,
             WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f32res_f16(ctx, raw, input, output, residual, m, k)?,
             WeightBuf::Q8_0 { raw, .. } => gemv_q8_0_add_f32res_f16(ctx, raw, input, output, residual, m, k)?,
+            WeightBuf::Q4_0 { raw, .. } => { gemv_q4_0_f16(ctx, raw, input, output, m, k)?; },
         }
         Ok(())
     }
@@ -226,6 +241,7 @@ impl WeightBuf {
             WeightBuf::F32(_) => panic!("F32 weights: prefill GEMM needs f32-weight GEMM kernel (not yet implemented)"),
             WeightBuf::Q4K { f16, .. } => f16,
             WeightBuf::Q8_0 { f16, .. } => f16,
+            WeightBuf::Q4_0 { f16, .. } => f16,
         }
     }
 }
@@ -1002,6 +1018,18 @@ fn upload_weight_wb(
         return Ok(WeightBuf::Q4K { raw: raw_buf, f16: f16_buf });
     }
 
+    // Q4_0 with aligned K: fused on-the-fly dequant (72% less BW than f16, 47% less than Q8_0)
+    if dtype == DType::Q4_0 && (k as usize % Q4_0_BLOCK_ELEMS == 0) {
+        let tb = model
+            .tensor_buffer(name)
+            .ok_or_else(|| ForwardError::MissingWeight(name.to_string()))?;
+        let opts = MTLResourceOptions::StorageModeShared;
+        let raw_buf = ctx.device.new_buffer(tb.size as u64, opts);
+        unsafe { std::ptr::copy_nonoverlapping(tb.ptr, raw_buf.contents() as *mut u8, tb.size); }
+        let f16_buf = upload_weight(ctx, model, name)?;
+        return Ok(WeightBuf::Q4_0 { raw: raw_buf, f16: f16_buf });
+    }
+
     // Q8_0 with aligned K: use fused on-the-fly dequant (47% less bandwidth than f16)
     if dtype == DType::Q8_0 && (k as usize % Q8_0_BLOCK_ELEMS == 0) {
         let tb = model
@@ -1485,6 +1513,10 @@ impl Executor {
                         fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
                                            ff_dim as u32, h as u32)?;
                     }
+                    (WeightBuf::Q4_0 { raw: g_raw, .. }, WeightBuf::Q4_0 { raw: u_raw, .. }) => {
+                        fused_ffn_q4_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
                     (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {
                         fused_ffn_f16w_f32(ctx, g_buf, u_buf, &s.x_norm2, &s.act,
                                            ff_dim as u32, h as u32)?;
@@ -1723,6 +1755,10 @@ impl Executor {
                         fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
                                            ff_dim as u32, h as u32)?;
                     }
+                    (WeightBuf::Q4_0 { raw: g_raw, .. }, WeightBuf::Q4_0 { raw: u_raw, .. }) => {
+                        fused_ffn_q4_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
                     (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {
                         fused_ffn_f16w_f32(ctx, g_buf, u_buf, &s.x_norm2, &s.act,
                                            ff_dim as u32, h as u32)?;
@@ -1854,6 +1890,10 @@ impl Executor {
             match (&w.ffn_gate[l], &w.ffn_up[l]) {
                 (WeightBuf::Q8_0 { raw: g_raw, .. }, WeightBuf::Q8_0 { raw: u_raw, .. }) => {
                     fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                       ff_dim as u32, h as u32)?;
+                }
+                (WeightBuf::Q4_0 { raw: g_raw, .. }, WeightBuf::Q4_0 { raw: u_raw, .. }) => {
+                    fused_ffn_q4_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
                                        ff_dim as u32, h as u32)?;
                 }
                 (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {

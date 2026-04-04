@@ -78,6 +78,13 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemm_f16",
     // rope.metal (batch)
     "rope_batch_inplace_f16",
+    // gemv_q4_0.metal (fused Q4_0 dequant — 47% less BW than Q8_0, 72% less than f16)
+    "gemv_q4_0_f32in_f32out",
+    "gemv_q4_0_add_f32_f32in",
+    "gemv_q4_0_f32in",
+    "gemv_q4_0_f16",
+    "gemv_q4_0_add_f16",
+    "fused_ffn_q4_0_f32",
     // fused_qkv.metal (Q+K+V in one dispatch — 36× more TGs for better BW utilization)
     "fused_qkv_q8_0_f32",
     "fused_qkv_bias_q8_0_f32",
