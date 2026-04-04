@@ -218,8 +218,10 @@ impl MetalContext {
         let mut pending = self.pending.borrow_mut();
 
         // Lazily create command buffer + encoder on first use.
-        // Auto-commit after 512 encodes to avoid excessively long buffers.
-        if pending.is_none() || pending.as_ref().map_or(false, |p| p.encode_count >= 512) {
+        // Auto-commit after 8192 encodes. A 7B model with 28 layers uses
+        // ~437 kernels/token; 8192 allows ~18 tokens before forced flush.
+        // Previous limit of 512 caused mid-token stalls on larger models.
+        if pending.is_none() || pending.as_ref().map_or(false, |p| p.encode_count >= 8192) {
             if let Some(old) = pending.take() {
                 old.enc.end_encoding();
                 old.cmd.commit();

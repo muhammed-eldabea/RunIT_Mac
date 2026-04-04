@@ -25,9 +25,9 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  🎯 100% token-match with llama.cpp on Qwen2.5-0.5B Q8_0      │
-│  ⚡ 75 tok/sec decode on Apple M4 Pro                          │
+│  ⚡ 161 tok/sec decode on Apple M4 Pro (2.2× speedup)          │
 │  🦀 Pure Rust — zero Python runtime                            │
-│  🔧 Custom Metal GPU kernels (MSL)                             │
+│  🔧 Custom Metal GPU kernels — simd_sum + vectorized loads     │
 │  📦 GGUF native — loads any GGUF quantized model               │
 │  🌐 OpenAI-compatible HTTP server                              │
 │  🔬 f32 precision pipeline for research-grade accuracy         │
@@ -56,19 +56,39 @@ Every test produces **identical output** to llama.cpp (greedy, temp=0):
 ## ⚡ Performance
 
 <p align="center">
-  <img src="docs/assets/perf-chart.svg" alt="Performance comparison" width="680"/>
+  <img src="docs/assets/perf-chart.svg" alt="Performance comparison — Before &amp; After" width="700"/>
 </p>
 
-| Metric | Value |
-|--------|-------|
-| **Decode throughput** | 75 tok/sec |
-| **Avg latency** | 13.4 ms/tok |
-| **p50 / p95 latency** | 13.4 / 13.5 ms |
-| **Model load** | 17 ms (mmap) |
-| **GPU upload** | 502 ms |
-| **KV cache** | 0.8 MB (f32, flat) |
+<p align="center">
+  <img src="docs/assets/speedup-chart.svg" alt="Per-prompt decode speed" width="700"/>
+</p>
 
-> Measured on Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode
+### 🚀 2.2× Speedup: 73 → 161 tok/sec
+
+| Metric | Before (v1) | After (v2) | Improvement |
+|--------|:-----------:|:----------:|:-----------:|
+| **Decode throughput** | 73 tok/sec | **161 tok/sec** | **2.2×** ⚡ |
+| **Avg latency** | 13.79 ms/tok | **6.20 ms/tok** | 2.2× faster |
+| **p50 latency** | 13.81 ms | **6.19 ms** | 2.2× faster |
+| **p95 latency** | 14.49 ms | **6.85 ms** | 2.1× faster |
+| **Model load** | 17 ms | 19 ms | — |
+| **GPU upload** | 472 ms | 1087 ms | (f16 dequant) |
+| **Output quality** | ✅ Perfect | ✅ Perfect | Maintained |
+
+> Measured on Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode · 50 tokens
+
+### Key Optimizations Applied
+
+| Optimization | Impact | Files |
+|-------------|--------|-------|
+| **simd_sum() hardware reduction** | Replaces 124-step Kahan sequential sum | `gemv.metal`, `gemv_q4k.metal` |
+| **Vectorized half4/float4 loads** | 4× fewer load instructions, perfect coalescing | `gemv.metal` |
+| **Kahan removal from inner loop** | -3 extra ops per element (5× fewer FLOPs) | `gemv.metal`, `gemv_q4k.metal` |
+| **f16 weight dequantization** | 2× less bandwidth (2 vs 4 bytes/element) | `forward.rs` |
+| **Command buffer batching** | Eliminates mid-token GPU stalls | `context.rs` |
+| **GEMM inner-loop unrolling** | Better ILP for prefill path | `gemm.metal` |
+
+> 📋 Full implementation plan for reaching >200 tok/sec: [docs/implementation-plan.md](docs/implementation-plan.md)
 
 ---
 
@@ -184,8 +204,8 @@ Options:
 
 | Kernel | File | Description |
 |--------|------|-------------|
-| `gemv_f32_f32out` | `gemv.metal` | GEMV with Kahan summation + contiguous blocks |
-| `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV |
+| `gemv_f16w_f32in_f32out` | `gemv.metal` | GEMV with simd_sum + vectorized half4 loads |
+| `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV (simd_sum) |
 | `rms_norm_f32_f32_f32g` | `norm.metal` | Full f32 RMSNorm |
 | `rope_inplace_f32` | `rope.metal` | Non-interleaved RoPE (Qwen2/LLaMA) |
 | `decode_attention_f32` | `attention.metal` | Single-query attention with online softmax |
@@ -198,17 +218,17 @@ Options:
 
 ## 🔬 Precision Pipeline
 
-RunIT uses an **f32 precision pipeline** throughout the forward pass for research-grade accuracy:
+RunIT uses an **f32 residual stream** with **f16 weight bandwidth optimization** for maximum speed without quality loss:
 
 ```
-Token Embedding (f32)
+Token Embedding (f32 lookup)
     │
     ▼
 RMSNorm (f32 in → f32 out, f32 gamma)
     │
     ▼
-Q/K/V Projections (f32 GEMV with Kahan summation)
-    │
+Q/K/V Projections (f16 weights × f32 input → f32 output)
+    │                    └── simd_sum + vectorized half4 loads
     ▼
 RoPE (f32, non-interleaved pairing)
     │
@@ -219,11 +239,14 @@ KV Cache (f32, flat layout)
 Decode Attention (f32 Q·K, f32 softmax, f32 output)
     │
     ▼
-FFN: gate/up → SiLU → down (all f32)
+FFN: gate/up → SiLU → down (f16 weights, f32 accumulation)
     │
     ▼
-lm_head (f32 → f32 logits)
+lm_head (f16 weights × f32 input → f32 logits)
 ```
+
+> Weights dequantized from Q8\_0/Q5K/Q6K to f16 (2 bytes/element) instead of f32 (4 bytes).
+> Quantized formats have ≤8 significant bits — f16's 10-bit mantissa loses nothing.
 
 ---
 
@@ -264,8 +287,9 @@ lm_head (f32 → f32 logits)
 | 8 | Prefill batching (GEMM kernel) | ✅ Done |
 | 9 | **f32 precision pipeline** | ✅ Done |
 | 10 | **RoPE fix + llama.cpp parity** | ✅ **Done** |
-| 11 | f32 prefill + batched prompt processing | 🔜 Next |
-| 12 | Performance optimization (NEON GEMV, fused kernels) | 📋 Planned |
+| 11 | **GEMV optimization** (simd_sum, vectorize, f16 dequant) | ✅ **Done — 2.2× speedup** |
+| 12 | simdgroup\_matrix GEMV + fused kernels | 🔜 Next |
+| 13 | PagedAttention KV cache + continuous batching | 📋 Planned |
 
 ---
 
@@ -293,7 +317,7 @@ RunIT/
 │   ├── tokenizer/      # HuggingFace tokenizer wrapper
 │   ├── kernels/        # Metal shaders + Rust dispatch
 │   │   ├── shaders/    # .metal source → .metallib at build time
-│   │   │   ├── gemv.metal          # 12 GEMV kernel variants
+│   │   │   ├── gemv.metal          # 14 GEMV variants (simd_sum + half4/float4)
 │   │   │   ├── gemv_q4k.metal      # Fused Q4K GEMV (6 variants)
 │   │   │   ├── attention.metal     # FlashAttention-2 + decode attention
 │   │   │   ├── rope.metal          # RoPE (non-interleaved, f16/f32/batch)
