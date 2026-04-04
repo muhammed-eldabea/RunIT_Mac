@@ -1,73 +1,82 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 320" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 380" fill="none">
   <defs>
     <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0f0f23" />
-      <stop offset="100%" style="stop-color:#1a1a3e" />
+      <stop offset="0%" style="stop-color:#0f0f23"/>
+      <stop offset="100%" style="stop-color:#1a1a3e"/>
     </linearGradient>
   </defs>
+  <rect width="720" height="380" rx="12" fill="url(#bg2)"/>
 
-  <rect width="700" height="320" rx="12" fill="url(#bg2)"/>
+  <text x="360" y="28" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="16" font-weight="700" fill="#e0e0e0">Bandwidth Efficiency — Bytes Read per Token vs Speed</text>
+  <text x="360" y="46" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" fill="#8888bb">Apple M4 Pro · Qwen2.5-0.5B · each bar = measured tok/sec</text>
 
-  <text x="350" y="28" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="16" font-weight="700" fill="#e0e0e0">Per-Prompt Decode Speed (tok/sec)</text>
-  <text x="350" y="46" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" fill="#8888bb">Qwen2.5-0.5B Q8_0 · Apple M4 Pro · temperature=0 · 40 tokens each</text>
+  <!-- Y-axis -->
+  <text x="38" y="85"  text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">280</text>
+  <text x="38" y="125" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">230</text>
+  <text x="38" y="165" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">180</text>
+  <text x="38" y="205" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">130</text>
+  <text x="38" y="245" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">80</text>
+  <text x="38" y="285" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">30</text>
 
-  <!-- Y-axis labels -->
-  <text x="38" y="95"  text-anchor="end" font-family="SF Mono, monospace" font-size="10" fill="#666688">180</text>
-  <text x="38" y="135" text-anchor="end" font-family="SF Mono, monospace" font-size="10" fill="#666688">150</text>
-  <text x="38" y="175" text-anchor="end" font-family="SF Mono, monospace" font-size="10" fill="#666688">120</text>
-  <text x="38" y="215" text-anchor="end" font-family="SF Mono, monospace" font-size="10" fill="#666688">90</text>
-  <text x="38" y="255" text-anchor="end" font-family="SF Mono, monospace" font-size="10" fill="#666688">60</text>
+  <!-- Grid -->
+  <line x1="45" y1="80"  x2="680" y2="80"  stroke="#ffffff08" stroke-width="1"/>
+  <line x1="45" y1="120" x2="680" y2="120" stroke="#ffffff08" stroke-width="1"/>
+  <line x1="45" y1="160" x2="680" y2="160" stroke="#ffffff08" stroke-width="1"/>
+  <line x1="45" y1="200" x2="680" y2="200" stroke="#ffffff08" stroke-width="1"/>
+  <line x1="45" y1="240" x2="680" y2="240" stroke="#ffffff08" stroke-width="1"/>
+  <line x1="45" y1="280" x2="680" y2="280" stroke="#ffffff08" stroke-width="1"/>
 
-  <!-- Grid lines -->
-  <line x1="45" y1="90"  x2="660" y2="90"  stroke="#ffffff10" stroke-width="1"/>
-  <line x1="45" y1="130" x2="660" y2="130" stroke="#ffffff10" stroke-width="1"/>
-  <line x1="45" y1="170" x2="660" y2="170" stroke="#ffffff10" stroke-width="1" stroke-dasharray="4,4"/>
-  <line x1="45" y1="210" x2="660" y2="210" stroke="#ffffff10" stroke-width="1"/>
-  <line x1="45" y1="250" x2="660" y2="250" stroke="#ffffff10" stroke-width="1"/>
+  <!-- llama.cpp reference line -->
+  <line x1="45" y1="120" x2="680" y2="120" stroke="#4ecdc4" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="685" y="123" font-family="SF Mono,monospace" font-size="8" fill="#4ecdc4">llama 230</text>
 
-  <!-- Target line (120 tok/sec from proposal) -->
-  <line x1="45" y1="170" x2="660" y2="170" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="665" y="173" font-family="SF Mono, monospace" font-size="9" fill="#f59e0b">target</text>
+  <!-- Bars: height = (tok_sec - 30) / 250 * 200 pixels, y = 280 - height -->
+  <!-- v0.0.1: 73 tok/s, f32 (4.0 B/elem) -->
+  <rect x="70" y="245" width="70" height="35" rx="4" fill="#f97316" opacity="0.7"/>
+  <text x="105" y="240" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#f97316">73</text>
+  <text x="105" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">f32</text>
+  <text x="105" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">4.0 B/el</text>
 
-  <!-- Baseline (73 tok/sec) -->
-  <line x1="45" y1="228" x2="660" y2="228" stroke="#f97316" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
-  <text x="665" y="232" font-family="SF Mono, monospace" font-size="9" fill="#f97316">baseline</text>
+  <!-- v0.2.0: 161 tok/s, f16 (2.0 B/elem) -->
+  <rect x="175" y="175" width="70" height="105" rx="4" fill="#86efac" opacity="0.7"/>
+  <text x="210" y="170" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#86efac">161</text>
+  <text x="210" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">f16</text>
+  <text x="210" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">2.0 B/el</text>
 
-  <!-- ═══ BAR GROUPS ═══ -->
-  <!-- Prompt 1: "ML question" -->
-  <rect x="80" y="102" width="35" height="148" rx="4" fill="#4ade80" opacity="0.85"/>
-  <text x="98" y="97" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="bold" fill="#4ade80">161</text>
-  <text x="98" y="270" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">ML</text>
-  <text x="98" y="282" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">question</text>
+  <!-- v0.3.0: 224 tok/s, Q8_0 fused (1.06 B/elem) -->
+  <rect x="280" y="124" width="70" height="156" rx="4" fill="#4ade80" opacity="0.7"/>
+  <text x="315" y="119" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#4ade80">224</text>
+  <text x="315" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q8_0</text>
+  <text x="315" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">1.06 B/el</text>
 
-  <!-- Prompt 2: "Quantum computing" -->
-  <rect x="195" y="96" width="35" height="154" rx="4" fill="#4ade80" opacity="0.85"/>
-  <text x="213" y="91" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="bold" fill="#4ade80">167</text>
-  <text x="213" y="270" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">Quantum</text>
-  <text x="213" y="282" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">computing</text>
+  <!-- v0.6.0: 233 tok/s, Q8_0 + fusion -->
+  <rect x="385" y="118" width="70" height="162" rx="4" fill="#22c55e" opacity="0.7"/>
+  <text x="420" y="113" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#22c55e">233</text>
+  <text x="420" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q8+fuse</text>
+  <text x="420" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">1.06 B/el</text>
 
-  <!-- Prompt 3: "Capital of France" -->
-  <rect x="310" y="93" width="35" height="157" rx="4" fill="#22c55e" opacity="0.85"/>
-  <text x="328" y="88" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="bold" fill="#22c55e">170</text>
-  <text x="328" y="270" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">Capital of</text>
-  <text x="328" y="282" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">France?</text>
+  <!-- v0.7.0: 258 tok/s, Q4_0 fused (0.56 B/elem) -->
+  <rect x="490" y="97" width="70" height="183" rx="4" fill="#f59e0b" opacity="0.85"/>
+  <text x="525" y="92" text-anchor="middle" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#f59e0b">258 🏆</text>
+  <text x="525" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q4_0</text>
+  <text x="525" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">0.56 B/el</text>
 
-  <!-- Prompt 4: "Ocean poem" -->
-  <rect x="425" y="95" width="35" height="155" rx="4" fill="#4ade80" opacity="0.85"/>
-  <text x="443" y="90" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="bold" fill="#4ade80">168</text>
-  <text x="443" y="270" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">Ocean</text>
-  <text x="443" y="282" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="9" fill="#a0a0c0">poem</text>
-
-  <!-- Average -->
-  <rect x="555" y="98" width="55" height="152" rx="6" fill="#4ade80" opacity="0.15" stroke="#4ade80" stroke-width="1.5"/>
-  <text x="583" y="92" text-anchor="middle" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#4ade80">166</text>
-  <text x="583" y="270" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="11" font-weight="700" fill="#e0e0e0">AVG</text>
+  <!-- llama.cpp bar for comparison -->
+  <rect x="595" y="120" width="70" height="160" rx="4" fill="#4ecdc4" opacity="0.4"/>
+  <text x="630" y="115" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#4ecdc4">230</text>
+  <text x="630" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">llama.cpp</text>
+  <text x="630" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">Q8_0</text>
 
   <!-- Legend -->
-  <rect x="170" y="298" width="12" height="12" rx="3" fill="#4ade80"/>
-  <text x="188" y="309" font-family="SF Pro Display, Arial" font-size="11" fill="#a0a0c0">RunIT v2 (optimized)</text>
-  <line x1="320" y1="304" x2="345" y2="304" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="352" y="309" font-family="SF Pro Display, Arial" font-size="11" fill="#a0a0c0">Proposal target (120 tok/s)</text>
-  <line x1="510" y1="304" x2="535" y2="304" stroke="#f97316" stroke-width="1" stroke-dasharray="3,3"/>
-  <text x="542" y="309" font-family="SF Pro Display, Arial" font-size="11" fill="#a0a0c0">Baseline (73 tok/s)</text>
+  <rect x="100" y="336" width="10" height="10" rx="2" fill="#f97316"/>
+  <text x="115" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.0.1</text>
+  <rect x="170" y="336" width="10" height="10" rx="2" fill="#86efac"/>
+  <text x="185" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.2.0</text>
+  <rect x="240" y="336" width="10" height="10" rx="2" fill="#4ade80"/>
+  <text x="255" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.3.0</text>
+  <rect x="310" y="336" width="10" height="10" rx="2" fill="#22c55e"/>
+  <text x="325" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.6.0</text>
+  <rect x="380" y="336" width="10" height="10" rx="2" fill="#f59e0b"/>
+  <text x="395" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.7.0</text>
+  <text x="455" y="346" font-family="SF Mono,monospace" font-size="9" fill="#666">Less bytes/elem → less bandwidth → faster</text>
 </svg>

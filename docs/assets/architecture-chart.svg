@@ -1,289 +1,199 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 820" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 780" fill="none">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0a0a1a"/>
       <stop offset="100%" style="stop-color:#12122e"/>
     </linearGradient>
-    <linearGradient id="rustGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#f97316"/>
-      <stop offset="100%" style="stop-color:#c2410c"/>
-    </linearGradient>
-    <linearGradient id="metalGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#6366f1"/>
-      <stop offset="100%" style="stop-color:#4338ca"/>
-    </linearGradient>
-    <linearGradient id="gpuGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#22c55e"/>
-      <stop offset="100%" style="stop-color:#15803d"/>
-    </linearGradient>
-    <linearGradient id="ioGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#3b82f6"/>
-      <stop offset="100%" style="stop-color:#1d4ed8"/>
-    </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="2" result="blur"/>
-      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-    </filter>
     <filter id="shadow">
       <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.4"/>
     </filter>
   </defs>
-
-  <!-- Background -->
-  <rect width="960" height="820" rx="16" fill="url(#bg)"/>
+  <rect width="960" height="780" rx="16" fill="url(#bg)"/>
 
   <!-- Title -->
-  <text x="480" y="36" text-anchor="middle" font-family="SF Pro Display, -apple-system, Arial" font-size="22" font-weight="800" fill="#e0e0f0" filter="url(#glow)">RunIT Engine — System Architecture</text>
-  <text x="480" y="56" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" fill="#7777aa">Bare-metal Rust + Metal GPU inference on Apple Silicon</text>
+  <text x="480" y="34" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="20" font-weight="800" fill="#e0e0f0">RunIT Engine — System Architecture</text>
+  <text x="480" y="54" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#7777aa">Bare-metal Rust + Metal GPU · 258 tok/sec · 15 shaders · 85+ kernels</text>
 
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- ROW 1: Input Sources (top)                             -->
-  <!-- ═══════════════════════════════════════════════════════ -->
+  <!-- ═══ ROW 1: Input Sources ═══ -->
+  <rect x="60" y="75" width="175" height="68" rx="10" fill="#1e1e3a" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="148" y="96" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#f97316">📦 GGUF Model</text>
+  <text x="148" y="114" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a0a0c0">mmap zero-copy · Q4_0/Q8_0/Q4K</text>
+  <text x="148" y="128" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">Qwen2 · LLaMA · Mistral · OLMoE</text>
 
-  <!-- GGUF File -->
-  <rect x="60" y="80" width="180" height="72" rx="10" fill="#1e1e3a" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
-  <rect x="60" y="80" width="180" height="24" rx="10" fill="url(#rustGrad)" opacity="0.15"/>
-  <text x="150" y="97" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="11" font-weight="700" fill="#f97316">📦 GGUF Model File</text>
-  <text x="150" y="117" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">mmap() → zero-copy view</text>
-  <text x="150" y="131" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">metadata + tensor buffers</text>
-  <text x="150" y="145" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#666688">Q4K · Q8_0 · Q5K · Q6K · F16</text>
+  <rect x="270" y="75" width="155" height="68" rx="10" fill="#1e1e3a" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="348" y="96" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#3b82f6">📝 Tokenizer</text>
+  <text x="348" y="114" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a0a0c0">HuggingFace BPE</text>
+  <text x="348" y="128" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">151K vocab · encode/decode</text>
 
-  <!-- Tokenizer -->
-  <rect x="280" y="80" width="160" height="72" rx="10" fill="#1e1e3a" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
-  <rect x="280" y="80" width="160" height="24" rx="10" fill="url(#ioGrad)" opacity="0.15"/>
-  <text x="360" y="97" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="11" font-weight="700" fill="#3b82f6">📝 Tokenizer</text>
-  <text x="360" y="117" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">HuggingFace JSON</text>
-  <text x="360" y="131" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">encode() / decode()</text>
-  <text x="360" y="145" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#666688">BPE · 151K vocab</text>
+  <rect x="460" y="75" width="175" height="68" rx="10" fill="#1e1e3a" stroke="#22c55e" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="548" y="96" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#22c55e">🌐 Input</text>
+  <text x="548" y="114" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a0a0c0">CLI --prompt / HTTP API</text>
+  <text x="548" y="128" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">OpenAI-compatible /v1/chat</text>
 
-  <!-- User Prompt / API -->
-  <rect x="480" y="80" width="180" height="72" rx="10" fill="#1e1e3a" stroke="#22c55e" stroke-width="1.5" filter="url(#shadow)"/>
-  <rect x="480" y="80" width="180" height="24" rx="10" fill="url(#gpuGrad)" opacity="0.15"/>
-  <text x="570" y="97" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="11" font-weight="700" fill="#22c55e">🌐 Input</text>
-  <text x="570" y="117" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">CLI --prompt "..."</text>
-  <text x="570" y="131" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#a0a0c0">HTTP /v1/chat/completions</text>
-  <text x="570" y="145" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#666688">OpenAI-compatible API</text>
+  <!-- ═══ ROW 2: Rust Crates ═══ -->
+  <rect x="40" y="165" width="600" height="95" rx="12" fill="#ffffff04" stroke="#f9731630" stroke-width="1"/>
+  <text x="55" y="183" font-family="SF Pro Display,Arial" font-size="10" font-weight="700" fill="#f97316" opacity="0.6">RUST CRATES</text>
 
-  <!-- Arrows from inputs -->
-  <line x1="150" y1="152" x2="150" y2="183" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrowOrange)"/>
-  <line x1="360" y1="152" x2="360" y2="183" stroke="#3b82f6" stroke-width="1.5"/>
-  <line x1="570" y1="152" x2="480" y2="183" stroke="#22c55e" stroke-width="1.5"/>
+  <rect x="55"  y="192" width="140" height="56" rx="8" fill="#1a1a35" stroke="#f9731640" stroke-width="1"/>
+  <text x="125" y="210" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f97316">bare-metal-gguf</text>
+  <text x="125" y="226" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">GGUF parser · ModelConfig</text>
+  <text x="125" y="238" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">mmap tensor buffers</text>
 
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- ROW 2: Rust Crate Layer                                -->
-  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="210" y="192" width="195" height="56" rx="8" fill="#1a1a35" stroke="#f9731640" stroke-width="1"/>
+  <text x="308" y="210" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f97316">bare-metal-engine</text>
+  <text x="308" y="226" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">Executor · forward() · KvCache</text>
+  <text x="308" y="238" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">Sampler · Server · WeightBuf</text>
 
-  <!-- Big container: Rust Crates -->
-  <rect x="40" y="175" width="630" height="120" rx="12" fill="#ffffff05" stroke="#f9731640" stroke-width="1" stroke-dasharray="4,3"/>
-  <text x="55" y="194" font-family="SF Pro Display, Arial" font-size="10" font-weight="700" fill="#f97316" opacity="0.6">RUST CRATES</text>
+  <rect x="420" y="192" width="205" height="56" rx="8" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="523" y="210" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#6366f1">bare-metal-kernels</text>
+  <text x="523" y="226" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">MetalContext · dispatch.rs</text>
+  <text x="523" y="238" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#a0a0c0">15 .metal files · 85+ kernels</text>
 
-  <!-- bare-metal-gguf -->
-  <rect x="60" y="200" width="145" height="80" rx="8" fill="#1a1a35" stroke="#f9731650" stroke-width="1"/>
-  <text x="133" y="218" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#f97316">bare-metal-gguf</text>
-  <text x="133" y="234" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">GGUF parser</text>
-  <text x="133" y="248" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">ModelConfig</text>
-  <text x="133" y="262" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">TensorBuffer ptrs</text>
+  <!-- ═══ ROW 3: Decode Pipeline ═══ -->
+  <rect x="40" y="280" width="880" height="310" rx="14" fill="#ffffff03" stroke="#22c55e25" stroke-width="1.5"/>
+  <text x="480" y="302" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="14" font-weight="800" fill="#22c55e">⚡ Decode Pipeline — 242 dispatches/token · 258 tok/sec</text>
 
-  <!-- bare-metal-engine -->
-  <rect x="225" y="200" width="195" height="80" rx="8" fill="#1a1a35" stroke="#f9731650" stroke-width="1"/>
-  <text x="323" y="218" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#f97316">bare-metal-engine</text>
-  <text x="323" y="234" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">Executor · forward()</text>
-  <text x="323" y="248" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">KvCache · Sampler</text>
-  <text x="323" y="262" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">Weight upload + dequant</text>
-
-  <!-- bare-metal-kernels -->
-  <rect x="440" y="200" width="210" height="80" rx="8" fill="#1a1a35" stroke="#6366f150" stroke-width="1"/>
-  <text x="545" y="218" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#6366f1">bare-metal-kernels</text>
-  <text x="545" y="234" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">MetalContext (PSOs)</text>
-  <text x="545" y="248" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">dispatch.rs (Rust→GPU)</text>
-  <text x="545" y="262" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">9 .metal shader files</text>
-
-  <!-- Crate dependency arrows -->
-  <path d="M205 240 L225 240" stroke="#f9731660" stroke-width="1" marker-end="url(#arrowSmall)"/>
-  <path d="M420 240 L440 240" stroke="#6366f160" stroke-width="1" marker-end="url(#arrowSmall)"/>
-
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- ROW 3: EXECUTOR — The Main Forward Pass Pipeline       -->
-  <!-- ═══════════════════════════════════════════════════════ -->
-
-  <rect x="40" y="315" width="880" height="365" rx="14" fill="#ffffff04" stroke="#22c55e30" stroke-width="1.5"/>
-  <text x="480" y="338" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="14" font-weight="800" fill="#22c55e" filter="url(#glow)">⚡ Executor Forward Pass — Decode Pipeline (per token)</text>
-
-  <!-- Step 1: Embedding -->
-  <rect x="70" y="355" width="150" height="50" rx="8" fill="#1e293b" stroke="#f59e0b80" stroke-width="1"/>
-  <text x="145" y="375" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" font-weight="700" fill="#f59e0b">① Embedding</text>
-  <text x="145" y="393" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">tok_emb[id] → f32 [h]</text>
+  <!-- Embedding -->
+  <rect x="60" y="316" width="130" height="44" rx="8" fill="#1e293b" stroke="#f59e0b70" stroke-width="1"/>
+  <text x="125" y="335" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f59e0b">① Embedding</text>
+  <text x="125" y="350" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#aaa">tok_emb[id] → f32</text>
 
   <!-- Arrow -->
-  <line x1="220" y1="380" x2="255" y2="380" stroke="#ffffff30" stroke-width="1.5"/>
+  <line x1="190" y1="338" x2="215" y2="338" stroke="#ffffff25" stroke-width="1.5"/>
 
-  <!-- Transformer Block (big box) -->
-  <rect x="255" y="345" width="640" height="175" rx="10" fill="#ffffff06" stroke="#6366f140" stroke-width="1" stroke-dasharray="5,3"/>
-  <text x="575" y="363" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="11" font-weight="700" fill="#6366f1">🔄 × N Transformer Layers</text>
+  <!-- Transformer Layers -->
+  <rect x="215" y="310" width="685" height="155" rx="10" fill="#ffffff05" stroke="#6366f130" stroke-width="1"/>
+  <text x="557" y="327" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#6366f1">🔄 × 24 Transformer Layers (10 dispatches/layer)</text>
 
-  <!-- Attention block -->
-  <rect x="275" y="375" width="290" height="130" rx="8" fill="#1a1a3a" stroke="#818cf830" stroke-width="1"/>
-  <text x="420" y="393" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="10" font-weight="700" fill="#818cf8">Self-Attention</text>
+  <!-- Attention side -->
+  <rect x="230" y="336" width="310" height="120" rx="8" fill="#1a1a3a" stroke="#818cf825" stroke-width="1"/>
+  <text x="385" y="352" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="10" font-weight="700" fill="#818cf8">Self-Attention</text>
 
-  <!-- Attention sub-steps -->
-  <rect x="285" y="400" width="115" height="22" rx="5" fill="#6366f115" stroke="#6366f130" stroke-width="0.5"/>
-  <text x="343" y="415" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a5b4fc">RMSNorm (f32→f32)</text>
+  <rect x="240" y="358" width="290" height="18" rx="4" fill="#f59e0b12"/>
+  <text x="385" y="371" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">① Fused QKV+bias (Q4_0/Q8_0) — 1 dispatch</text>
 
-  <rect x="285" y="427" width="115" height="22" rx="5" fill="#22c55e15" stroke="#22c55e30" stroke-width="0.5"/>
-  <text x="343" y="442" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">Q/K/V GEMV ⚡</text>
+  <rect x="240" y="380" width="140" height="18" rx="4" fill="#6366f112"/>
+  <text x="310" y="393" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a5b4fc">② Fused QK RoPE</text>
 
-  <rect x="285" y="454" width="115" height="22" rx="5" fill="#6366f115" stroke="#6366f130" stroke-width="0.5"/>
-  <text x="343" y="469" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a5b4fc">RoPE (f32 inplace)</text>
+  <rect x="385" y="380" width="145" height="18" rx="4" fill="#6366f112"/>
+  <text x="458" y="393" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a5b4fc">③④ KV scatter ×2</text>
 
-  <rect x="285" y="481" width="115" height="16" rx="4" fill="#f5920815" stroke="#f5920830" stroke-width="0.5"/>
-  <text x="343" y="493" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#fdba74">KV Cache Write</text>
+  <rect x="240" y="402" width="290" height="18" rx="4" fill="#22c55e12"/>
+  <text x="385" y="415" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#86efac">⑤ decode_attention_f32 (simd_sum)</text>
 
-  <!-- KV Cache visual -->
-  <rect x="415" y="400" width="140" height="62" rx="6" fill="#0f172a" stroke="#f5920840" stroke-width="1"/>
-  <text x="485" y="416" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#f59e0b">KV Cache (f32)</text>
-  <text x="485" y="432" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">K: [kv_heads, seq, d]</text>
-  <text x="485" y="446" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">V: [kv_heads, seq, d]</text>
-  <text x="485" y="458" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#666">Unified Memory (GPU+CPU)</text>
+  <rect x="240" y="424" width="290" height="18" rx="4" fill="#22c55e12"/>
+  <text x="385" y="437" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#86efac">⑥ O-proj GEMV + residual</text>
 
-  <!-- Decode Attention -->
-  <rect x="415" y="468" width="140" height="30" rx="5" fill="#22c55e15" stroke="#22c55e30" stroke-width="0.5"/>
-  <text x="485" y="487" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">Decode Attn ⚡</text>
+  <!-- FFN side -->
+  <rect x="555" y="336" width="330" height="120" rx="8" fill="#1a1a3a" stroke="#fb923c25" stroke-width="1"/>
+  <text x="720" y="352" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="10" font-weight="700" fill="#fb923c">Feed-Forward (SwiGLU)</text>
 
-  <!-- Output proj -->
-  <rect x="285" y="500" width="270" height="18" rx="4" fill="#22c55e10" stroke="#22c55e20" stroke-width="0.5"/>
-  <text x="420" y="513" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">O-proj GEMV + Residual ⚡</text>
+  <rect x="565" y="358" width="310" height="18" rx="4" fill="#6366f112"/>
+  <text x="720" y="371" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a5b4fc">⑦ RMSNorm (f32→f32)</text>
 
-  <!-- FFN Block -->
-  <rect x="585" y="375" width="295" height="130" rx="8" fill="#1a1a3a" stroke="#f4720530" stroke-width="1"/>
-  <text x="733" y="393" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="10" font-weight="700" fill="#fb923c">Feed-Forward (SwiGLU)</text>
+  <rect x="565" y="380" width="310" height="18" rx="4" fill="#f59e0b12"/>
+  <text x="720" y="393" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">⑧ Fused gate+up+silu (Q4_0/Q8_0) — 1 dispatch</text>
 
-  <rect x="595" y="400" width="115" height="22" rx="5" fill="#6366f115" stroke="#6366f130" stroke-width="0.5"/>
-  <text x="653" y="415" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a5b4fc">RMSNorm (f32→f32)</text>
+  <rect x="565" y="402" width="310" height="18" rx="4" fill="#22c55e12"/>
+  <text x="720" y="415" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#86efac">⑨ FFN down GEMV + residual</text>
 
-  <rect x="595" y="427" width="115" height="22" rx="5" fill="#22c55e15" stroke="#22c55e30" stroke-width="0.5"/>
-  <text x="653" y="442" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">Gate GEMV ⚡</text>
+  <text x="720" y="437" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#666">Weights read on-the-fly: 0.56 B/elem (Q4_0) or 1.06 B/elem (Q8_0)</text>
 
-  <rect x="723" y="427" width="140" height="22" rx="5" fill="#22c55e15" stroke="#22c55e30" stroke-width="0.5"/>
-  <text x="793" y="442" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">Up GEMV ⚡</text>
+  <!-- Final stages -->
+  <rect x="60" y="480" width="140" height="44" rx="8" fill="#1e293b" stroke="#a855f770" stroke-width="1"/>
+  <text x="130" y="499" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#a855f7">Final Norm</text>
+  <text x="130" y="514" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#aaa">RMSNorm f32→f32</text>
 
-  <rect x="595" y="454" width="268" height="22" rx="5" fill="#f5920815" stroke="#f5920830" stroke-width="0.5"/>
-  <text x="729" y="469" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#fdba74">SiLU(gate) × up  (fused)</text>
+  <line x1="200" y1="502" x2="225" y2="502" stroke="#ffffff25" stroke-width="1.5"/>
 
-  <rect x="595" y="481" width="268" height="22" rx="5" fill="#22c55e15" stroke="#22c55e30" stroke-width="0.5"/>
-  <text x="729" y="496" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#86efac">Down GEMV + Residual ⚡</text>
+  <rect x="225" y="480" width="185" height="44" rx="8" fill="#1e293b" stroke="#f59e0b70" stroke-width="1"/>
+  <text x="318" y="499" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f59e0b">lm_head GEMV ⚡</text>
+  <text x="318" y="514" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#aaa">Q4_0/Q8_0 fused → f32 logits</text>
 
-  <!-- Arrow between attn and FFN -->
-  <line x1="565" y1="440" x2="585" y2="440" stroke="#ffffff30" stroke-width="1.5"/>
+  <line x1="410" y1="502" x2="435" y2="502" stroke="#ffffff25" stroke-width="1.5"/>
 
-  <!-- Step 3: Final norm + lm_head -->
-  <rect x="70" y="535" width="170" height="50" rx="8" fill="#1e293b" stroke="#a855f780" stroke-width="1"/>
-  <text x="155" y="555" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" font-weight="700" fill="#a855f7">③ Final Norm</text>
-  <text x="155" y="573" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">RMSNorm (f32→f32)</text>
+  <rect x="435" y="480" width="145" height="44" rx="8" fill="#1e293b" stroke="#ec489970" stroke-width="1"/>
+  <text x="508" y="499" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#ec4899">Sampler</text>
+  <text x="508" y="514" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#aaa">temp · top-k/p · rep penalty</text>
 
-  <line x1="240" y1="560" x2="275" y2="560" stroke="#ffffff30" stroke-width="1.5"/>
+  <!-- ═══ ROW 4: GPU Kernels ═══ -->
+  <rect x="40" y="610" width="880" height="90" rx="12" fill="#ffffff03" stroke="#6366f125" stroke-width="1"/>
+  <text x="480" y="630" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="800" fill="#818cf8">🔧 Metal GPU Kernels — 15 shader files · 85+ kernel functions</text>
 
-  <rect x="275" y="535" width="200" height="50" rx="8" fill="#1e293b" stroke="#22c55e80" stroke-width="1"/>
-  <text x="375" y="555" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" font-weight="700" fill="#22c55e">④ lm_head GEMV ⚡</text>
-  <text x="375" y="573" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">f16 weights × f32 → logits</text>
+  <rect x="55"  y="643" width="75" height="46" rx="5" fill="#1a1a35" stroke="#f59e0b40" stroke-width="1"/>
+  <text x="93"  y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#f59e0b">gemv_q4_0</text>
+  <text x="93"  y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#f59e0b">0.56 B/el 🏆</text>
+  <text x="93"  y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">7 kernels</text>
 
-  <line x1="475" y1="560" x2="510" y2="560" stroke="#ffffff30" stroke-width="1.5"/>
+  <rect x="138" y="643" width="75" height="46" rx="5" fill="#1a1a35" stroke="#22c55e40" stroke-width="1"/>
+  <text x="176" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#22c55e">gemv_q8_0</text>
+  <text x="176" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">1.06 B/el</text>
+  <text x="176" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">7 kernels</text>
 
-  <rect x="510" y="535" width="170" height="50" rx="8" fill="#1e293b" stroke="#ec489980" stroke-width="1"/>
-  <text x="595" y="555" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" font-weight="700" fill="#ec4899">⑤ Sampler</text>
-  <text x="595" y="573" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#a0a0c0">temp · top-k · top-p · rep</text>
+  <rect x="221" y="643" width="68" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="255" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">gemv</text>
+  <text x="255" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">f16/f32</text>
+  <text x="255" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">14 kernels</text>
 
-  <!-- Arrow from layers to final -->
-  <path d="M155 520 L155 535" stroke="#ffffff30" stroke-width="1.5"/>
+  <rect x="297" y="643" width="72" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="333" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">fused_qkv</text>
+  <text x="333" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">Q+K+V+bias</text>
+  <text x="333" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">3 kernels</text>
 
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- ROW 4: Metal GPU Kernel Detail                         -->
-  <!-- ═══════════════════════════════════════════════════════ -->
+  <rect x="377" y="643" width="72" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="413" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">fused_ffn</text>
+  <text x="413" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">gate+up+silu</text>
+  <text x="413" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">3 kernels</text>
 
-  <rect x="40" y="700" width="880" height="100" rx="12" fill="#ffffff04" stroke="#6366f130" stroke-width="1"/>
-  <text x="480" y="722" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="12" font-weight="800" fill="#818cf8">🔧 Metal GPU Kernels (9 shader files · 50+ kernel functions)</text>
+  <rect x="457" y="643" width="68" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="491" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">attention</text>
+  <text x="491" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">flash+decode</text>
+  <text x="491" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">3 kernels</text>
 
-  <!-- Kernel boxes -->
-  <rect x="60"  y="733" width="100" height="52" rx="6" fill="#1a1a35" stroke="#22c55e40" stroke-width="1"/>
-  <text x="110" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#22c55e">gemv.metal</text>
-  <text x="110" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">14 variants</text>
-  <text x="110" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#4ade80">simd_sum+half4</text>
+  <rect x="533" y="643" width="55" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="561" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">norm</text>
+  <text x="561" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">RMSNorm</text>
+  <text x="561" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">4 var</text>
 
-  <rect x="170" y="733" width="100" height="52" rx="6" fill="#1a1a35" stroke="#22c55e40" stroke-width="1"/>
-  <text x="220" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#22c55e">gemv_q4k</text>
-  <text x="220" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">6 fused Q4K</text>
-  <text x="220" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#4ade80">on-the-fly dequant</text>
+  <rect x="596" y="643" width="55" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="624" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">rope</text>
+  <text x="624" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">f16/f32</text>
+  <text x="624" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">+fused QK</text>
 
-  <rect x="280" y="733" width="90" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="325" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">attention</text>
-  <text x="325" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">FlashAttn-2</text>
-  <text x="325" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">decode attn</text>
+  <rect x="659" y="643" width="72" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="695" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">multi-row</text>
+  <text x="695" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">4 rows/TG</text>
+  <text x="695" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">6 kernels</text>
 
-  <rect x="380" y="733" width="80" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="420" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">norm</text>
-  <text x="420" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">RMSNorm</text>
-  <text x="420" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">4 variants</text>
+  <rect x="739" y="643" width="72" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="775" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">gemm</text>
+  <text x="775" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">simdgroup</text>
+  <text x="775" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">AMX prefill</text>
 
-  <rect x="470" y="733" width="80" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="510" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">rope</text>
-  <text x="510" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">f16/f32/batch</text>
-  <text x="510" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">non-interleaved</text>
+  <rect x="819" y="643" width="90" height="46" rx="5" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
+  <text x="864" y="658" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" font-weight="700" fill="#818cf8">+5 more</text>
+  <text x="864" y="670" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">activation, dequant</text>
+  <text x="864" y="682" text-anchor="middle" font-family="SF Mono,monospace" font-size="6" fill="#888">turboquant, q4k</text>
 
-  <rect x="560" y="733" width="80" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="600" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">activation</text>
-  <text x="600" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">SiLU·mul</text>
-  <text x="600" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">add, argmax</text>
+  <!-- ═══ Output sidebar ═══ -->
+  <rect x="700" y="75" width="220" height="185" rx="12" fill="#1e1e3a" stroke="#ec489950" stroke-width="1.5" filter="url(#shadow)"/>
+  <text x="810" y="97" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="700" fill="#ec4899">🎯 Output</text>
 
-  <rect x="650" y="733" width="80" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="690" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">gemm</text>
-  <text x="690" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">16×16 tiled</text>
-  <text x="690" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">prefill GEMM</text>
+  <rect x="715" y="108" width="190" height="42" rx="6" fill="#0f172a" stroke="#3b82f640" stroke-width="1"/>
+  <text x="810" y="126" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#3b82f6">HTTP Server</text>
+  <text x="810" y="141" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#888">/v1/chat/completions · SSE</text>
 
-  <rect x="740" y="733" width="90" height="52" rx="6" fill="#1a1a35" stroke="#f5920840" stroke-width="1"/>
-  <text x="785" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#f59e0b">turboquant</text>
-  <text x="785" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">KV compress</text>
-  <text x="785" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">3-4 bit cache</text>
+  <rect x="715" y="157" width="190" height="35" rx="6" fill="#0f172a" stroke="#22c55e40" stroke-width="1"/>
+  <text x="810" y="174" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#22c55e">CLI generate</text>
+  <text x="810" y="186" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#888">--prompt · --tokens · --speculative</text>
 
-  <rect x="840" y="733" width="70" height="52" rx="6" fill="#1a1a35" stroke="#6366f140" stroke-width="1"/>
-  <text x="875" y="752" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" font-weight="700" fill="#818cf8">dequant</text>
-  <text x="875" y="765" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">Q4K→F16</text>
-  <text x="875" y="778" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#888">GPU batch</text>
+  <rect x="715" y="199" width="190" height="47" rx="6" fill="#0f172a" stroke="#f59e0b40" stroke-width="1"/>
+  <text x="810" y="216" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f59e0b">Performance</text>
+  <text x="810" y="230" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">258 tok/sec · 3.87 ms/tok</text>
+  <text x="810" y="242" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#4ade80">3.5× speedup · exceeds llama.cpp</text>
 
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- RIGHT SIDE: Output + Server                            -->
-  <!-- ═══════════════════════════════════════════════════════ -->
-
-  <!-- Output box -->
-  <rect x="720" y="80" width="200" height="210" rx="12" fill="#1e1e3a" stroke="#ec489960" stroke-width="1.5" filter="url(#shadow)"/>
-  <rect x="720" y="80" width="200" height="28" rx="12" fill="#ec489920"/>
-  <text x="820" y="99" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="12" font-weight="700" fill="#ec4899">🎯 Output</text>
-
-  <!-- Server sub-block -->
-  <rect x="735" y="118" width="170" height="48" rx="6" fill="#0f172a" stroke="#3b82f640" stroke-width="1"/>
-  <text x="820" y="136" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#3b82f6">HTTP Server (axum)</text>
-  <text x="820" y="152" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#888">/v1/chat/completions</text>
-  <text x="820" y="162" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#666">SSE streaming</text>
-
-  <!-- CLI sub-block -->
-  <rect x="735" y="174" width="170" height="40" rx="6" fill="#0f172a" stroke="#22c55e40" stroke-width="1"/>
-  <text x="820" y="192" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#22c55e">CLI generate</text>
-  <text x="820" y="207" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#888">--prompt · --tokens</text>
-
-  <!-- Benchmark sub-block -->
-  <rect x="735" y="222" width="170" height="40" rx="6" fill="#0f172a" stroke="#f59e0b40" stroke-width="1"/>
-  <text x="820" y="240" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" font-weight="700" fill="#f59e0b">Benchmark</text>
-  <text x="820" y="255" text-anchor="middle" font-family="SF Mono, monospace" font-size="8" fill="#888">161 tok/sec · 6.2ms/tok</text>
-  <text x="820" y="268" text-anchor="middle" font-family="SF Mono, monospace" font-size="7" fill="#4ade80">2.2× faster than v1</text>
-
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <!-- BOTTOM: Apple Silicon Unified Memory label             -->
-  <!-- ═══════════════════════════════════════════════════════ -->
-  <rect x="245" y="608" width="470" height="75" rx="10" fill="#ffffff04" stroke="#ffffff15" stroke-width="1"/>
-  <text x="480" y="630" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="12" font-weight="700" fill="#c0c0e0"> Apple Silicon Unified Memory Architecture</text>
-  <text x="480" y="650" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">CPU ↔ GPU share the same physical memory — no PCIe copies</text>
-  <text x="480" y="666" text-anchor="middle" font-family="SF Mono, monospace" font-size="9" fill="#888">StorageModeShared · mmap zero-copy · 273 GB/s bandwidth (M4 Pro)</text>
-
-  <!-- ⚡ legend -->
-  <text x="70" y="655" font-family="SF Mono, monospace" font-size="9" fill="#4ade80">⚡ = GPU kernel (Metal)</text>
-  <text x="70" y="670" font-family="SF Mono, monospace" font-size="9" fill="#f97316">🦀 = Rust (CPU)</text>
-
+  <!-- ═══ Footer ═══ -->
+  <rect x="200" y="720" width="560" height="46" rx="10" fill="#ffffff04" stroke="#ffffff12" stroke-width="1"/>
+  <text x="480" y="740" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="700" fill="#c0c0e0"> Apple Silicon Unified Memory Architecture</text>
+  <text x="480" y="756" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">CPU ↔ GPU share physical memory · StorageModeShared · mmap zero-copy · M4 Pro 273 GB/s</text>
 </svg>
