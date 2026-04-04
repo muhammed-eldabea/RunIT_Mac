@@ -59,6 +59,17 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemv_f32w_f32in",
     "gemv_add_f32res_f32w",
     "gemv_add_f32_f32w",
+    // gemv.metal (f16 weight, f32 in/out)
+    "gemv_f16w_f32in_f32out",
+    // gemv_q4k.metal (f32 in/out)
+    "gemv_q4k_f32in_f32out",
+    "gemv_q4k_add_f32_f32in",
+    // activation.metal (f32 KV cache scatter)
+    "kv_copy_to_cache_f32",
+    // rope.metal (f32)
+    "rope_inplace_f32",
+    // attention.metal (f32)
+    "decode_attention_f32",
     // gemm.metal
     "gemm_f16",
     // rope.metal (batch)

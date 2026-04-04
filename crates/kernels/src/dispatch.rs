@@ -813,6 +813,160 @@ pub fn kv_copy_to_cache_f16(
     })
 }
 
+/// f32 KV cache scatter: copy f32 K or V into f32 cache at position.
+pub fn kv_copy_to_cache_f32(
+    ctx: &MetalContext,
+    src: &Buffer,
+    dst: &Buffer,
+    pos: u32,
+    max_seq: u32,
+    head_dim: u32,
+    num_kv_heads: u32,
+) -> Result<()> {
+    let tg_width = (head_dim as u64).min(256);
+    ctx.encode("kv_copy_to_cache_f32", |enc| {
+        enc.set_buffer(0, Some(src), 0);
+        enc.set_buffer(1, Some(dst), 0);
+        enc.set_bytes(2, 4, &pos      as *const u32 as *const _);
+        enc.set_bytes(3, 4, &max_seq  as *const u32 as *const _);
+        enc.set_bytes(4, 4, &head_dim as *const u32 as *const _);
+        enc.dispatch_threads(
+            MTLSize { width: head_dim as u64, height: num_kv_heads as u64, depth: 1 },
+            MTLSize { width: tg_width,        height: 1,                   depth: 1 },
+        );
+    })
+}
+
+/// GEMV with f16 weights, f32 input, f32 output: y_f32 = A_f16 * x_f32
+pub fn gemv_f16w_f32in_f32out(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f16w_f32in_f32out", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q4K GEMV with f32 input and f32 output: y_f32 = A_q4k * x_f32
+pub fn gemv_q4k_f32in_f32out(
+    ctx: &MetalContext,
+    weight_q4k: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q4k_f32in_f32out", |enc| {
+        enc.set_buffer(0, Some(weight_q4k), 0);
+        enc.set_buffer(1, Some(input),      0);
+        enc.set_buffer(2, Some(output),     0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q4K GEMV + f32 residual with f32 input: y_f32 = A_q4k * x_f32 + res_f32
+pub fn gemv_q4k_add_f32_f32in(
+    ctx: &MetalContext,
+    weight_q4k: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q4k_add_f32_f32in", |enc| {
+        enc.set_buffer(0, Some(weight_q4k), 0);
+        enc.set_buffer(1, Some(input),      0);
+        enc.set_buffer(2, Some(output),     0);
+        enc.set_buffer(3, Some(residual),   0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// f32 RoPE: apply rotary embeddings in-place on f32 Q or K.
+pub fn rope_inplace_f32(
+    ctx: &MetalContext,
+    x: &Buffer,
+    head_dim: u32,
+    n_heads: u32,
+    seq_pos: u32,
+    rope_theta: f32,
+    batch_seq: u32,
+) -> Result<()> {
+    let tg_width = ((head_dim / 2) as u64).min(32).max(1);
+    ctx.encode("rope_inplace_f32", |enc| {
+        enc.set_buffer(0, Some(x), 0);
+        enc.set_bytes(1, 4, &head_dim   as *const u32 as *const _);
+        enc.set_bytes(2, 4, &n_heads    as *const u32 as *const _);
+        enc.set_bytes(3, 4, &seq_pos    as *const u32 as *const _);
+        enc.set_bytes(4, 4, &rope_theta as *const f32 as *const _);
+        enc.dispatch_threads(
+            MTLSize {
+                width:  (head_dim / 2) as u64,
+                height: n_heads as u64,
+                depth:  batch_seq as u64,
+            },
+            MTLSize { width: tg_width, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// f32 decode attention: reads f32 Q/K/V, writes f32 output.
+pub fn decode_attention_f32(
+    ctx: &MetalContext,
+    q: &Buffer,
+    k: &Buffer,
+    v: &Buffer,
+    out: &Buffer,
+    batch: u32,
+    kv_len: u32,
+    num_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    kv_head_stride: u32,
+) -> Result<()> {
+    let scale = 1.0f32 / (head_dim as f32).sqrt();
+
+    ctx.encode("decode_attention_f32", |enc| {
+        enc.set_buffer(0, Some(q),   0);
+        enc.set_buffer(1, Some(k),   0);
+        enc.set_buffer(2, Some(v),   0);
+        enc.set_buffer(3, Some(out), 0);
+        enc.set_bytes(4,  4, &kv_len       as *const u32 as *const _);
+        enc.set_bytes(5,  4, &num_heads    as *const u32 as *const _);
+        enc.set_bytes(6,  4, &num_kv_heads as *const u32 as *const _);
+        enc.set_bytes(7,  4, &scale        as *const f32 as *const _);
+        enc.set_bytes(8,  4, &head_dim     as *const u32 as *const _);
+        enc.set_bytes(9,  4, &kv_head_stride as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: num_heads as u64, height: batch as u64, depth: 1 },
+            MTLSize { width: 32,               height: 1,            depth: 1 },
+        );
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Argmax: find index of maximum value on GPU (avoids downloading full logits)
 // ─────────────────────────────────────────────────────────────────────────────

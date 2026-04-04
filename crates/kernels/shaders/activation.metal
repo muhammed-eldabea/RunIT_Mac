@@ -26,6 +26,23 @@ kernel void kv_copy_to_cache_f16(
     dst[dst_idx] = src[src_idx];
 }
 
+// f32 KV cache scatter: copy [num_kv_heads, head_dim] f32 into f32 cache.
+kernel void kv_copy_to_cache_f32(
+    device const float* src  [[buffer(0)]],
+    device       float* dst  [[buffer(1)]],
+    constant     uint&  pos      [[buffer(2)]],
+    constant     uint&  max_seq  [[buffer(3)]],
+    constant     uint&  head_dim [[buffer(4)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint d = gid.x;
+    uint h = gid.y;
+    if (d >= head_dim) return;
+    uint src_idx = h * head_dim + d;
+    uint dst_idx = (h * max_seq + pos) * head_dim + d;
+    dst[dst_idx] = src[src_idx];
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Argmax: find the index of the maximum element in a half buffer.
 //

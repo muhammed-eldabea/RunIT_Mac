@@ -258,6 +258,27 @@ kernel void gemv_add_f32_f16w(
     if (lid == 0) y[row] = acc + residual[row];
 }
 
+// GEMV with f16 weights, f32 input, f32 output: y_f32 = A_f16 * x_f32
+// Fills the gap for Q/K/V projections that need full f32 output precision.
+kernel void gemv_f16w_f32in_f32out(
+    device const half*  A     [[buffer(0)]],
+    device const float* x_vec [[buffer(1)]],
+    device       float* y     [[buffer(2)]],
+    constant     uint&  M     [[buffer(3)]],
+    constant     uint&  K     [[buffer(4)]],
+    uint row  [[threadgroup_position_in_grid]],
+    uint lid  [[thread_position_in_threadgroup]],
+    uint lsize[[threads_per_threadgroup]])
+{
+    if (row >= M) return;
+    device const half* A_row = A + row * K;
+    float acc = 0.0f;
+    for (uint i = lid; i < K; i += lsize)
+        acc += float(A_row[i]) * x_vec[i];
+    acc = simd_sum(acc);
+    if (lid == 0) y[row] = acc;
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // F32-WEIGHT GEMV VARIANTS
 //

@@ -310,7 +310,6 @@ fn run_loop_std(
         pos  += 1;
         step += 1;
 
-        // Stop AFTER sampling (never stop on the input/BOS token itself)
         if special.is_stop(sampled) { break; }
         next_token = sampled;
     }
@@ -363,7 +362,6 @@ fn run_loop_tq(
         generated.push(sampled);
         pos += 1;
 
-        // Stop AFTER sampling (never stop on the input/BOS token itself)
         if special.is_stop(sampled) { break; }
         next_token = sampled;
     }

@@ -10,14 +10,19 @@ use crate::tensor::DType;
 use bare_metal_kernels::{
     context::MetalContext,
     dispatch::{
-        add_f16, add_f16_into_f32, argmax_f16, decode_attention_f16, dequant_q4k_f16,
+        add_f16, add_f16_into_f32, argmax_f16,
+        decode_attention_f16, decode_attention_f32,
+        dequant_q4k_f16,
         flash_attention_f16, gemv_f16, gemv_add_f16, gemv_add_f32res_f16,
-        gemv_f16w_f32in, gemv_add_f32_f16w,
+        gemv_f16w_f32in, gemv_f16w_f32in_f32out, gemv_add_f32_f16w,
         gemv_q4k_f16, gemv_q4k_add_f16, gemv_q4k_add_f32res_f16,
-        gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
-        kv_copy_to_cache_f16, mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
+        gemv_q4k_f32in_f32out, gemv_q4k_add_f32_f32in,
+        gemv_f32_f32out, gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
+        kv_copy_to_cache_f16, kv_copy_to_cache_f32,
+        mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
         rms_norm_f32_f32,
-        rope_inplace_f16, scale_accumulate_f16, silu_mul_f16,
+        rope_inplace_f16, rope_inplace_f32,
+        scale_accumulate_f16, silu_mul_f16,
         Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS,
     },
     error::KernelError,
@@ -106,14 +111,13 @@ impl WeightBuf {
     ) -> Result<(), ForwardError> {
         match self {
             WeightBuf::F16(buf) => {
-                // No f16w_f32in_f32out kernel yet; use f32in→f16 then widen (lossy)
-                gemv_f16w_f32in(ctx, buf, input, output, m, k)?;
+                gemv_f16w_f32in_f32out(ctx, buf, input, output, m, k)?;
             }
             WeightBuf::F32(buf) => {
                 gemv_f32_f32out(ctx, buf, input, output, m, k)?;
             }
-            WeightBuf::Q4K { f16, .. } => {
-                gemv_f16w_f32in(ctx, f16, input, output, m, k)?;
+            WeightBuf::Q4K { raw, .. } => {
+                gemv_q4k_f32in_f32out(ctx, raw, input, output, m, k)?;
             }
         }
         Ok(())
@@ -150,7 +154,7 @@ impl WeightBuf {
         match self {
             WeightBuf::F16(buf) => gemv_add_f32_f16w(ctx, buf, input, output, residual, m, k)?,
             WeightBuf::F32(buf) => gemv_add_f32_f32w(ctx, buf, input, output, residual, m, k)?,
-            WeightBuf::Q4K { f16, .. } => gemv_add_f32_f16w(ctx, f16, input, output, residual, m, k)?,
+            WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f32_f32in(ctx, raw, input, output, residual, m, k)?,
         }
         Ok(())
     }
@@ -250,10 +254,10 @@ impl DecodeScratch {
         Self {
             x:        ctx.new_buffer(h * 4),  // f32 residual stream
             x_norm:   ctx.new_buffer(h * 4),  // f32 for full-precision GEMV input
-            q:        ctx.new_buffer(q_dim * 2),
-            k:        ctx.new_buffer(kv_dim * 2),
-            v:        ctx.new_buffer(kv_dim * 2),
-            attn_out: ctx.new_buffer(q_dim * 2),
+            q:        ctx.new_buffer(q_dim * 4),  // f32 for full-precision attention
+            k:        ctx.new_buffer(kv_dim * 4), // f32 for full-precision KV cache
+            v:        ctx.new_buffer(kv_dim * 4), // f32 for full-precision KV cache
+            attn_out: ctx.new_buffer(q_dim * 4),  // f32 attention output
             proj:     ctx.new_buffer(h * 2),
             x_norm2:  ctx.new_buffer(h * 4),  // f32 for full-precision GEMV input
             gate:     ctx.new_buffer(ff_dim * 2),
@@ -959,10 +963,8 @@ fn upload_weight_wb(
 
     // All other types (quantized, BF16, F32): dequant to f32 for precision
     if let Some(f32_buf) = upload_weight_as_f32(ctx, model, name)? {
-        eprintln!("  [f32] {} dtype={:?} → F32 ({} bytes)", name, dtype, f32_buf.length());
         return Ok(WeightBuf::F32(f32_buf));
     }
-    eprintln!("  [f16] {} dtype={:?} → fallback F16", name, dtype);
 
     // Shouldn't reach here, but fallback to F16
     Ok(WeightBuf::F16(upload_weight(ctx, model, name)?))
@@ -1219,122 +1221,47 @@ impl Executor {
         for l in 0..cfg.num_hidden_layers {
             let w = &self.weights;
 
-            // ── DIAGNOSTIC: trace L0 step-by-step at pos=0 ──────────────────
-            let diag = l == 0 && pos == 0;
-
-            if diag {
-                ctx.flush();
-                let px = s.x.contents() as *const f32;
-                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
-                eprintln!("DIAG L0 embedding[0..5]: {:?}", xv);
-            }
-
             // a) Attention pre-norm (f32 → f32)
             rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
-            if diag {
-                ctx.flush();
-                let px = s.x_norm.contents() as *const f32;
-                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
-                eprintln!("DIAG L0 x_norm[0..5]: {:?}", xv);
-            }
-
-            // b) Q projection with f32 input + optional bias
-            w.attn_q[l].gemv_f32in(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
-
-            if diag {
-                ctx.flush();
-                let pq = s.q.contents() as *const f16;
-                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 Q_before_bias[0..5]: {:?}", qv);
-            }
+            // b) Q projection: f32 input → f32 output (full precision)
+            w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_q_bias[l] {
-                add_f16(ctx, &s.q, bias, &s.q, q_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?;
             }
 
-            if diag {
-                ctx.flush();
-                let pq = s.q.contents() as *const f16;
-                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 Q_after_bias[0..5]: {:?}", qv);
-            }
-
-            // c) K projection with f32 input + optional bias
-            w.attn_k[l].gemv_f32in(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+            // c) K projection: f32 input → f32 output (full precision)
+            w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_k_bias[l] {
-                add_f16(ctx, &s.k, bias, &s.k, kv_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?;
             }
 
-            if diag {
-                ctx.flush();
-                let pk = s.k.contents() as *const f16;
-                let kv_vals: Vec<f32> = (0..5).map(|i| unsafe { (*pk.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 K[0..5]: {:?}", kv_vals);
-            }
-
-            // d) V projection with f32 input + optional bias
-            w.attn_v[l].gemv_f32in(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+            // d) V projection: f32 input → f32 output (full precision)
+            w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_v_bias[l] {
-                add_f16(ctx, &s.v, bias, &s.v, kv_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
             }
 
-            if diag {
-                ctx.flush();
-                let pv = s.v.contents() as *const f16;
-                let vv: Vec<f32> = (0..5).map(|i| unsafe { (*pv.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 V[0..5]: {:?}", vv);
-            }
-
-            // e) RoPE in-place on Q and K
-            rope_inplace_f16(ctx, &s.q, hd,
+            // e) RoPE in-place on f32 Q and K
+            rope_inplace_f32(ctx, &s.q, hd,
                              cfg.num_attention_heads as u32,
                              pos, cfg.rope_theta, 1)?;
-            rope_inplace_f16(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
+            rope_inplace_f32(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
 
-            if diag {
-                ctx.flush();
-                let pq = s.q.contents() as *const f16;
-                let pk = s.k.contents() as *const f16;
-                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
-                let kv_vals: Vec<f32> = (0..5).map(|i| unsafe { (*pk.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 Q_rope[0..5]: {:?}", qv);
-                eprintln!("DIAG L0 K_rope[0..5]: {:?}", kv_vals);
-            }
+            // f) Write f32 K/V into f32 cache — GPU-side scatter
+            kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
+            kv_copy_to_cache_f32(ctx, &s.v, kv.v_buf(l), pos, max_seq, hd, n_kv)?;
 
-            // f) Write K/V into cache — GPU-side scatter (no CPU flush needed!)
-            kv_copy_to_cache_f16(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
-            kv_copy_to_cache_f16(ctx, &s.v, kv.v_buf(l), pos, max_seq, hd, n_kv)?;
-
-            // g) Decode attention (q_len=1 specialised kernel)
-            decode_attention_f16(
+            // g) Decode attention: f32 Q/K/V → f32 output
+            decode_attention_f32(
                 ctx, &s.q, kv.k_buf(l), kv.v_buf(l), &s.attn_out,
                 1, kv_len_after,
                 cfg.num_attention_heads as u32, n_kv, hd, max_seq,
             )?;
 
-            if diag {
-                ctx.flush();
-                let pa = s.attn_out.contents() as *const f16;
-                let av: Vec<f32> = (0..5).map(|i| unsafe { (*pa.add(i)).to_f32() }).collect();
-                eprintln!("DIAG L0 attn_out[0..5]: {:?}", av);
-                eprintln!("DIAG L0 WeightBuf type: {}", match &w.attn_out[0] {
-                    WeightBuf::F16(_) => "F16",
-                    WeightBuf::F32(_) => "F32",
-                    WeightBuf::Q4K { .. } => "Q4K",
-                });
-            }
-
-            // h) Output projection + f32 residual
-            w.attn_out[l].gemv_add_f32res(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
-
-            if diag {
-                ctx.flush();
-                let px = s.x.contents() as *const f32;
-                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
-                eprintln!("DIAG L0 x_after_attn[0..5]: {:?}", xv);
-                eprintln!("REF  L0 x_after_attn:       [-0.0136, -0.00293, 0.01099, 0.02084, -0.00693]");
-            }
+            // h) Output projection: f32 attn_out + f32 residual → f32 output
+            w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
 
             // i) FFN pre-norm (f32 → f32)
             rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
@@ -1384,36 +1311,16 @@ impl Executor {
                 w.ffn_down[l].gemv_add_f32res(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
 
-            if pos == 0 {
-                ctx.flush();
-                let px = s.x.contents() as *const f32;
-                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
-                eprintln!("L{} f32 x_after_ffn[0..5]: {:?}", l, xv);
-            }
         }
 
         // All layers done — advance KV cache position.
         kv.advance();
 
-        // ── 3. Final norm + lm_head ───────────────────────────────────────────
-        rms_norm_f32in_f16out(ctx, &s.x, &s.x_final, &self.weights.output_norm,
+        // ── 3. Final norm + lm_head (f32 throughout for precision) ────────────
+        rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
                      cfg.rms_norm_eps, h as u32, 1)?;
-        self.weights.lm_head.gemv(ctx, &s.x_final, &s.logits,
+        self.weights.lm_head.gemv_f32in(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
-
-        // DEBUG: dump logits for first few positions
-        if pos < 3 {
-            ctx.flush();
-            let px = s.x.contents() as *const f32;
-            let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
-            eprintln!("f32 x_final[0..5]:  {:?}", xv);
-            eprintln!("REF (from before): [0.280, -16.063, 4.375, -0.865, 4.281] (was f16)");
-            let pl = s.logits.contents() as *const f16;
-            let mut all: Vec<(usize, f32)> = (0..cfg.vocab_size).map(|i| (i, unsafe { (*pl.add(i)).to_f32() })).collect();
-            all.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
-            eprintln!("OUR top-3: {:?}", &all[..3]);
-            eprintln!("REF top-3: [(322, 11.96), (89012, 11.49), (1747, 11.31)]");
-        }
 
         // ── 4. Download logits — flush for the entire token ───────────────────
         ctx.flush();
@@ -1463,32 +1370,37 @@ impl Executor {
             rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
-            w.attn_q[l].gemv_f32in(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+            // f32 Q/K/V projections
+            w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_q_bias[l] {
-                add_f16(ctx, &s.q, bias, &s.q, q_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.q, q_dim as u32)?;
             }
-            w.attn_k[l].gemv_f32in(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+            w.attn_k[l].gemv_f32_f32out(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_k_bias[l] {
-                add_f16(ctx, &s.k, bias, &s.k, kv_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.k, kv_dim as u32)?;
             }
-            w.attn_v[l].gemv_f32in(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+            w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_v_bias[l] {
-                add_f16(ctx, &s.v, bias, &s.v, kv_dim as u32)?;
+                add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
             }
 
-            rope_inplace_f16(ctx, &s.q, hd,
+            // f32 RoPE
+            rope_inplace_f32(ctx, &s.q, hd,
                              cfg.num_attention_heads as u32, pos, cfg.rope_theta, 1)?;
-            rope_inplace_f16(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
+            rope_inplace_f32(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
 
-            kv_copy_to_cache_f16(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
-            kv_copy_to_cache_f16(ctx, &s.v, kv.v_buf(l), pos, max_seq, hd, n_kv)?;
+            // f32 KV cache scatter
+            kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
+            kv_copy_to_cache_f32(ctx, &s.v, kv.v_buf(l), pos, max_seq, hd, n_kv)?;
 
-            decode_attention_f16(
+            // f32 decode attention
+            decode_attention_f32(
                 ctx, &s.q, kv.k_buf(l), kv.v_buf(l), &s.attn_out,
                 1, kv_len_after, cfg.num_attention_heads as u32, n_kv, hd, max_seq,
             )?;
 
-            w.attn_out[l].gemv_add_f32res(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+            // f32 output projection + f32 residual
+            w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
 
             rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
@@ -1527,10 +1439,10 @@ impl Executor {
 
         kv.advance();
 
-        rms_norm_f32in_f16out(ctx, &s.x, &s.x_final, &self.weights.output_norm,
+        // Use f32→f32 norm then f32-input GEMV for maximum lm_head precision
+        rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
                      cfg.rms_norm_eps, h as u32, 1)?;
-        // x_final is f16, lm_head expects f16 input
-        self.weights.lm_head.gemv(ctx, &s.x_final, &s.logits,
+        self.weights.lm_head.gemv_f32in(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
 
         // Argmax on GPU — download 4 bytes instead of 304KB

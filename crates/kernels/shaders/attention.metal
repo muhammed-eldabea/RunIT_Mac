@@ -239,3 +239,70 @@ kernel void decode_attention_f16(
         e++;
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// f32 Decode attention — reads f32 Q/K/V and writes f32 output.
+// Eliminates f16 truncation at the attention boundary for full-precision
+// Q/K/V projections and KV cache.
+// ─────────────────────────────────────────────────────────────────────────────
+kernel void decode_attention_f32(
+    device const float* Q            [[buffer(0)]],
+    device const float* K            [[buffer(1)]],
+    device const float* V            [[buffer(2)]],
+    device       float* O            [[buffer(3)]],
+    constant     uint&  kv_len       [[buffer(4)]],
+    constant     uint&  num_heads    [[buffer(5)]],
+    constant     uint&  num_kv_heads [[buffer(6)]],
+    constant     float& scale        [[buffer(7)]],
+    constant     uint&  head_dim         [[buffer(8)]],
+    constant     uint&  kv_head_stride   [[buffer(9)]],
+    uint3 tgid   [[threadgroup_position_in_grid]],
+    uint3 lid3   [[thread_position_in_threadgroup]],
+    uint3 lsize3 [[threads_per_threadgroup]])
+{
+    const uint lid   = lid3.x;
+    const uint lsize = lsize3.x;
+    const uint q_head = tgid.x;
+    const uint batch  = tgid.y;
+
+    const uint group_size = num_heads / num_kv_heads;
+    const uint kv_head    = q_head / group_size;
+
+    const uint q_base = (batch * num_heads + q_head) * head_dim;
+
+    float m_i = -INFINITY;
+    float l_i = 0.0f;
+    float O_reg[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+    for (uint kv_pos = 0; kv_pos < kv_len; kv_pos++) {
+        const uint kv_base = ((batch * num_kv_heads + kv_head) * kv_head_stride + kv_pos) * head_dim;
+
+        float dot = 0.0f;
+        for (uint d = lid; d < head_dim; d += lsize) {
+            dot += Q[q_base + d] * K[kv_base + d];
+        }
+        float score = simd_sum(dot) * scale;
+
+        float m_new   = max(m_i, score);
+        float rescale = exp(m_i - m_new);
+        float exp_new = exp(score - m_new);
+        float l_new   = rescale * l_i + exp_new;
+
+        uint e = 0;
+        for (uint d = lid; d < head_dim; d += lsize) {
+            O_reg[e] = O_reg[e] * rescale + exp_new * V[kv_base + d];
+            e++;
+        }
+
+        m_i = m_new;
+        l_i = l_new;
+    }
+
+    float inv_l = (l_i > 0.0f) ? (1.0f / l_i) : 0.0f;
+    const uint o_base = (batch * num_heads + q_head) * head_dim;
+    uint e = 0;
+    for (uint d = lid; d < head_dim; d += lsize) {
+        O[o_base + d] = O_reg[e] * inv_l;
+        e++;
+    }
+}

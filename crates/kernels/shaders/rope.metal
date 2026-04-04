@@ -44,6 +44,35 @@ kernel void rope_inplace_f16(
     x[base + 1] = half(x1 * c + x0 * s);
 }
 
+// f32 variant of RoPE — reads/writes float instead of half.
+// Used when Q/K projections are kept in f32 for full precision.
+kernel void rope_inplace_f32(
+    device       float* x         [[buffer(0)]],
+    constant     uint&  head_dim  [[buffer(1)]],
+    constant     uint&  n_heads   [[buffer(2)]],
+    constant     uint&  seq_pos   [[buffer(3)]],
+    constant     float& theta     [[buffer(4)]],
+    uint3 gid [[thread_position_in_grid]])
+{
+    uint pair    = gid.x;
+    uint head    = gid.y;
+    uint tok_idx = gid.z;
+
+    if (pair >= head_dim / 2) return;
+
+    uint base = (tok_idx * n_heads + head) * head_dim + pair * 2;
+
+    float x0 = x[base];
+    float x1 = x[base + 1];
+
+    float freq = float(seq_pos) / pow(theta, float(2 * pair) / float(head_dim));
+    float c = cos(freq);
+    float s = sin(freq);
+
+    x[base]     = x0 * c - x1 * s;
+    x[base + 1] = x1 * c + x0 * s;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Batched RoPE — for prefill: applies RoPE to all positions in one call.
 //

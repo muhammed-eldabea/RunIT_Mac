@@ -169,6 +169,88 @@ kernel void gemv_q4k_add_f16(
     }
 }
 
+// Q4K GEMV with f32 input and f32 output: y_f32 = A_q4k * x_f32
+// For Q/K/V projections needing full f32 precision through the attention path.
+kernel void gemv_q4k_f32in_f32out(
+    device const uchar* A_q4k [[buffer(0)]],
+    device const float* x_vec [[buffer(1)]],
+    device       float* y     [[buffer(2)]],
+    constant     uint&  M     [[buffer(3)]],
+    constant     uint&  K     [[buffer(4)]],
+    uint row   [[threadgroup_position_in_grid]],
+    uint lid   [[thread_position_in_threadgroup]],
+    uint lsize [[threads_per_threadgroup]])
+{
+    if (row >= M) return;
+    const uint n_blocks_per_row = K / Q4K_BLOCK_ELEMS;
+    device const uchar* row_data = A_q4k + row * n_blocks_per_row * Q4K_BLOCK_BYTES;
+    float acc = 0.0f;
+    for (uint blk = lid; blk < n_blocks_per_row; blk += lsize) {
+        device const uchar* block = row_data + blk * Q4K_BLOCK_BYTES;
+        const float d    = float(*reinterpret_cast<device const half*>(block + 0));
+        const float dmin = float(*reinterpret_cast<device const half*>(block + 2));
+        device const uchar* scales = block + Q4K_SCALES_OFF;
+        device const uchar* qs     = block + Q4K_QS_OFF;
+        const uint x_base = blk * Q4K_BLOCK_ELEMS;
+        for (uint j = 0; j < 4; j++) {
+            float sc_lo, m_lo, sc_hi, m_hi;
+            q4k_get_scale_min(j,     scales, sc_lo, m_lo);
+            q4k_get_scale_min(j + 4, scales, sc_hi, m_hi);
+            const float d_lo = d*sc_lo, m_lo2 = dmin*m_lo;
+            const float d_hi = d*sc_hi, m_hi2 = dmin*m_hi;
+            const uint base_lo = j*64, base_hi = j*64+32;
+            for (uint i = 0; i < 32; i++) {
+                const uchar bv = qs[j*32+i];
+                acc += (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i];
+                acc += (d_hi*float(bv>>4u)-m_hi2)   * x_vec[x_base+base_hi+i];
+            }
+        }
+    }
+    acc = simd_sum(acc);
+    if (lid == 0) y[row] = acc;
+}
+
+// Q4K GEMV + f32 residual with f32 input: y_f32[i] = (A_q4k * x_f32)[i] + residual_f32[i]
+kernel void gemv_q4k_add_f32_f32in(
+    device const uchar* A_q4k    [[buffer(0)]],
+    device const float* x_vec    [[buffer(1)]],
+    device       float* y        [[buffer(2)]],
+    device const float* residual [[buffer(3)]],
+    constant     uint&  M        [[buffer(4)]],
+    constant     uint&  K        [[buffer(5)]],
+    uint row   [[threadgroup_position_in_grid]],
+    uint lid   [[thread_position_in_threadgroup]],
+    uint lsize [[threads_per_threadgroup]])
+{
+    if (row >= M) return;
+    const uint n_blocks_per_row = K / Q4K_BLOCK_ELEMS;
+    device const uchar* row_data = A_q4k + row * n_blocks_per_row * Q4K_BLOCK_BYTES;
+    float acc = 0.0f;
+    for (uint blk = lid; blk < n_blocks_per_row; blk += lsize) {
+        device const uchar* block = row_data + blk * Q4K_BLOCK_BYTES;
+        const float d    = float(*reinterpret_cast<device const half*>(block + 0));
+        const float dmin = float(*reinterpret_cast<device const half*>(block + 2));
+        device const uchar* scales = block + Q4K_SCALES_OFF;
+        device const uchar* qs     = block + Q4K_QS_OFF;
+        const uint x_base = blk * Q4K_BLOCK_ELEMS;
+        for (uint j = 0; j < 4; j++) {
+            float sc_lo, m_lo, sc_hi, m_hi;
+            q4k_get_scale_min(j,     scales, sc_lo, m_lo);
+            q4k_get_scale_min(j + 4, scales, sc_hi, m_hi);
+            const float d_lo = d*sc_lo, m_lo2 = dmin*m_lo;
+            const float d_hi = d*sc_hi, m_hi2 = dmin*m_hi;
+            const uint base_lo = j*64, base_hi = j*64+32;
+            for (uint i = 0; i < 32; i++) {
+                const uchar bv = qs[j*32+i];
+                acc += (d_lo*float(bv&0x0Fu)-m_lo2) * x_vec[x_base+base_lo+i];
+                acc += (d_hi*float(bv>>4u)-m_hi2)   * x_vec[x_base+base_hi+i];
+            }
+        }
+    }
+    acc = simd_sum(acc);
+    if (lid == 0) y[row] = acc + residual[row];
+}
+
 // Q4K GEMV + f32 residual: y_f32[i] = (A_q4k * x_f16)[i] + residual_f32[i]
 kernel void gemv_q4k_add_f32res_f16(
     device const uchar* A_q4k    [[buffer(0)]],
