@@ -166,9 +166,6 @@ Options:
   <img src="docs/assets/architecture-chart.svg" alt="Per-prompt decode speed" width="900"/>
 </p>
 
-<p align="center">
-  <img src="docs/assets/docs/assets/architecture-chart.svg" alt="Arch View — Before &amp; After" width="700"/>
-</p>
 
 ### Crate Structure
 
