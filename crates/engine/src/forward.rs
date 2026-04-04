@@ -258,6 +258,8 @@ pub(crate) struct LayerWeights {
     pub(crate) attn_q_bias: Vec<Option<metal::Buffer>>, // [num_heads*head_dim]
     pub(crate) attn_k_bias: Vec<Option<metal::Buffer>>, // [num_kv_heads*head_dim]
     pub(crate) attn_v_bias: Vec<Option<metal::Buffer>>, // [num_kv_heads*head_dim]
+    pub(crate) attn_q_norm: Vec<Option<metal::Buffer>>, // [head_dim] Qwen3 QK-norm
+    pub(crate) attn_k_norm: Vec<Option<metal::Buffer>>, // [head_dim] Qwen3 QK-norm
     pub(crate) attn_out:  Vec<WeightBuf>,               // [hidden_size, num_heads*head_dim]
 
     pub(crate) ffn_norm: Vec<metal::Buffer>,            // [hidden_size]
@@ -1129,6 +1131,8 @@ impl Executor {
         let mut attn_v     = Vec::with_capacity(n);
         let mut attn_q_bias = Vec::with_capacity(n);
         let mut attn_k_bias = Vec::with_capacity(n);
+        let mut attn_q_norm: Vec<Option<metal::Buffer>> = Vec::with_capacity(n);
+        let mut attn_k_norm: Vec<Option<metal::Buffer>> = Vec::with_capacity(n);
         let mut attn_v_bias = Vec::with_capacity(n);
         let mut attn_out   = Vec::with_capacity(n);
         let mut ffn_norm   = Vec::with_capacity(n);
@@ -1155,6 +1159,8 @@ impl Executor {
             attn_q_bias.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_q.bias"))?);
             attn_k_bias.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_k.bias"))?);
             attn_v_bias.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_v.bias"))?);
+            attn_q_norm.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_q_norm.weight"))?);
+            attn_k_norm.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_k_norm.weight"))?);
             attn_out.push(upload_weight_wb(&ctx, model, &format!("blk.{l}.attn_output.weight"), h, q_dim)?);
             ffn_norm.push(
                 upload_weight_as_f32(&ctx, model, &format!("blk.{l}.ffn_norm.weight"))?
@@ -1288,7 +1294,9 @@ impl Executor {
             weights: LayerWeights {
                 tok_emb, output_norm, lm_head,
                 attn_norm, attn_q, attn_k, attn_v,
-                attn_q_bias, attn_k_bias, attn_v_bias, attn_out,
+                attn_q_bias, attn_k_bias, attn_v_bias,
+                attn_q_norm, attn_k_norm,
+                attn_out,
                 ffn_norm, ffn_gate, ffn_up, ffn_down,
                 moe_router, moe_gate_exps, moe_up_exps, moe_down_exps,
             },
@@ -1423,6 +1431,18 @@ impl Executor {
                 eprintln!("L0 x_norm[0..4]={:.6?}", norm_v);
                 eprintln!("L0 Q[0..4]={:.6?}", qv);
                 eprintln!("L0 K[0..4]={:.6?}", kv);
+            }
+
+            // e') QK-norm: per-head RMSNorm on Q and K (Qwen3)
+            if let Some(qn) = &w.attn_q_norm[l] {
+                // Q is [q_dim] f32 = [num_heads × head_dim]
+                // Apply RMSNorm per head: each head_dim-sized slice
+                rms_norm_f32_f32(ctx, &s.q, &s.q, qn,
+                                 cfg.rms_norm_eps, hd, cfg.num_attention_heads as u32)?;
+            }
+            if let Some(kn) = &w.attn_k_norm[l] {
+                rms_norm_f32_f32(ctx, &s.k, &s.k, kn,
+                                 cfg.rms_norm_eps, hd, n_kv)?;
             }
 
             // e) Fused RoPE: apply to BOTH Q and K in ONE dispatch
@@ -1696,6 +1716,16 @@ impl Executor {
                     w.attn_v[l].gemv_f32_f32out(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
                     if let Some(bias) = &w.attn_v_bias[l] { add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?; }
                 }
+            }
+
+            // QK-norm (Qwen3)
+            if let Some(qn) = &w.attn_q_norm[l] {
+                rms_norm_f32_f32(ctx, &s.q, &s.q, qn,
+                                 cfg.rms_norm_eps, hd, cfg.num_attention_heads as u32)?;
+            }
+            if let Some(kn) = &w.attn_k_norm[l] {
+                rms_norm_f32_f32(ctx, &s.k, &s.k, kn,
+                                 cfg.rms_norm_eps, hd, n_kv)?;
             }
 
             // f32 Fused QK RoPE (1 dispatch instead of 2)

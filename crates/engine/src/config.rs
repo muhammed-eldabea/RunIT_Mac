@@ -160,12 +160,19 @@ impl ModelConfig {
         let num_key_value_heads =
             opt_usize(&format!("{p}.attention.head_count_kv"), num_attention_heads);
 
-        if hidden_size % num_attention_heads != 0 {
-            return Err(LoadError::InvalidConfig(format!(
-                "hidden_size ({hidden_size}) not divisible by num_attention_heads ({num_attention_heads})"
-            )));
-        }
-        let head_dim = hidden_size / num_attention_heads;
+        // Head dimension: prefer explicit GGUF key (Qwen3 uses head_dim=128
+        // even when hidden_size/num_heads=64). Fall back to computed value.
+        let head_dim = opt_usize(
+            &format!("{p}.attention.key_length"),
+            {
+                if hidden_size % num_attention_heads != 0 {
+                    return Err(LoadError::InvalidConfig(format!(
+                        "hidden_size ({hidden_size}) not divisible by num_attention_heads ({num_attention_heads})"
+                    )));
+                }
+                hidden_size / num_attention_heads
+            }
+        );
 
         // ── RoPE ──────────────────────────────────────────────────
         // Qwen2 uses 1_000_000.0; LLaMA-2 uses 10_000.0
