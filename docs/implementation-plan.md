@@ -1,7 +1,7 @@
 # Implementation Plan — Performance Enhancement & Scaling
 
-> **Current state:** 161 tok/sec on Apple M4 Pro (Qwen2.5-0.5B Q8_0)
-> **Target:** >250 tok/sec decode, 4+ concurrent server requests, <4GB active memory
+> **Current state:** 224 tok/sec on Apple M4 Pro (Qwen2.5-0.5B Q8_0) — 97% of llama.cpp
+> **Target:** >280 tok/sec decode (exceed llama.cpp), 4+ concurrent requests, <4GB active memory
 
 ---
 
@@ -10,12 +10,13 @@
 | Phase | What was done | Impact |
 |:-----:|---------------|:------:|
 | ✅ | **GEMV: simd_sum() + vectorized half4/float4** — replaced 124-step Kahan reduction with 1-cycle hardware instruction; 4× fewer load instructions via dot(float4) | **+36%** (73→102 tok/s) |
-| ✅ | **f16 weight dequantization** — quantized types (Q8_0/Q5K/Q6K etc.) stored as f16 instead of f32, halving GEMV bandwidth | **+58%** (102→161 tok/s) |
+| ✅ | **f16 weight dequantization** — quantized types stored as f16 instead of f32, halving GEMV bandwidth | **+58%** (102→161 tok/s) |
+| ✅ | **Fused Q8\_0 GEMV** — reads packed 1.06 bytes/elem on-the-fly instead of dequanted f16 (2 bytes/elem) | **+39%** (161→224 tok/s) |
 | ✅ | **Q4K GEMV optimization** — removed Kahan, simd_sum, vectorized input reads | Included above |
 | ✅ | **Command buffer batching** — 512→8192 encode limit eliminates mid-token GPU stalls | ~5% latency reduction |
 | ✅ | **GEMM unrolling** — 4× unrolled inner loop for better ILP in prefill | Prefill improvement |
 
-**Total achieved: 73 → 161 tok/sec = 2.2× speedup** 🚀
+**Total achieved: 73 → 224 tok/sec = 3.1× speedup (97% of llama.cpp)** 🚀
 
 ---
 
@@ -254,7 +255,7 @@ For long contexts (>1K tokens), this becomes the bottleneck.
 
 | Metric | Current | Phase 1 | Phase 2 | Phase 3 |
 |--------|:-------:|:-------:|:-------:|:-------:|
-| Decode tok/sec | **161** | >200 | >250 | >250 |
+| Decode tok/sec | **224** | >280 | >320 | >320 |
 | Concurrent requests | 1 | 1 | 1 | **4+** |
 | KV memory (7B, 4K ctx) | 470 MB | **235 MB** | 235 MB | Paged |
 | Time-to-first-token | ~50ms | <30ms | <20ms | <50ms |
@@ -276,14 +277,14 @@ For long contexts (>1K tokens), this becomes the bottleneck.
 ### Bottleneck Breakdown (per token, Q8_0 0.5B)
 
 ```
-Weight reads (GEMV):     ~500 MB  →  500/273000 = 1.83 ms  (theoretical min)
-KV cache reads (attn):   ~0.5 MB  →  negligible at short ctx
-Kernel dispatch (×400):  ~2µs×400 = 0.80 ms
-CPU overhead (sample):   ~0.10 ms
+Weight reads (Q8_0 fused): ~525 MB → 525/273000 = 1.92 ms  (theoretical)
+KV cache reads (attn):     ~0.5 MB → negligible at short ctx
+Kernel dispatch (×340):    ~2µs×340 = 0.68 ms
+CPU overhead (sample):     ~0.10 ms
 ───────────────────────────────────────────
-Theoretical minimum:     ~2.73 ms/token = 366 tok/sec
-Current:                 6.20 ms/token = 161 tok/sec
-Gap:                     2.27× — addressable via Phases 1-2
+Theoretical minimum:       ~2.70 ms/token = 370 tok/sec
+Current:                   4.61 ms/token = 224 tok/sec
+Gap:                       1.65× — kernel fusion + multi-row GEMV
 ```
 
 ---

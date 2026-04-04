@@ -1,86 +1,71 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 420" fill="none">
   <defs>
     <linearGradient id="pbg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#0f0f23" />
-      <stop offset="100%" style="stop-color:#1a1a3e" />
-    </linearGradient>
-    <linearGradient id="greenGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#22c55e" />
-      <stop offset="100%" style="stop-color:#4ade80" />
-    </linearGradient>
-    <linearGradient id="orangeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#f97316" />
-      <stop offset="100%" style="stop-color:#fb923c" />
+      <stop offset="0%" style="stop-color:#0f0f23"/>
+      <stop offset="100%" style="stop-color:#1a1a3e"/>
     </linearGradient>
   </defs>
-  
   <rect width="720" height="420" rx="12" fill="url(#pbg)"/>
-  
-  <!-- Title -->
-  <text x="360" y="30" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="17" font-weight="700" fill="#e0e0e0">RunIT Decode Performance — Before &amp; After Optimization</text>
-  <text x="360" y="50" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode</text>
 
-  <!-- ═══ THROUGHPUT SECTION ═══ -->
-  <text x="360" y="78" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="14" font-weight="600" fill="#c0c0e0">Throughput (tokens/sec — higher is better)</text>
+  <text x="360" y="30" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="17" font-weight="700" fill="#e0e0e0">RunIT Decode Performance — Optimization Journey</text>
+  <text x="360" y="50" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#8888bb">Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode · 50 tokens</text>
 
-  <!-- llama.cpp bar -->
-  <text x="110" y="108" text-anchor="end" font-family="SF Pro Display, Arial" font-size="13" fill="#a0a0c0">llama.cpp</text>
-  <rect x="120" y="93" width="460" height="26" rx="5" fill="#4ecdc4" opacity="0.8"/>
-  <text x="590" y="111" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#4ecdc4">230 tok/s</text>
+  <!-- Throughput bars -->
+  <text x="360" y="78" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="13" font-weight="600" fill="#c0c0e0">Throughput (tokens/sec)</text>
 
-  <!-- RunIT AFTER bar -->
-  <text x="110" y="143" text-anchor="end" font-family="SF Pro Display, Arial" font-size="13" font-weight="700" fill="#4ade80">RunIT v2</text>
-  <rect x="120" y="128" width="322" height="26" rx="5" fill="url(#greenGrad)" opacity="0.9"/>
-  <text x="452" y="146" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#4ade80">161 tok/s ⚡</text>
+  <!-- llama.cpp -->
+  <text x="108" y="108" text-anchor="end" font-family="SF Pro Display,Arial" font-size="12" fill="#a0a0c0">llama.cpp</text>
+  <rect x="118" y="93" width="460" height="25" rx="5" fill="#4ecdc4" opacity="0.75"/>
+  <text x="588" y="110" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#4ecdc4">230 tok/s</text>
 
-  <!-- RunIT BEFORE bar -->
-  <text x="110" y="178" text-anchor="end" font-family="SF Pro Display, Arial" font-size="13" fill="#f97316">RunIT v1</text>
-  <rect x="120" y="163" width="150" height="26" rx="5" fill="url(#orangeGrad)" opacity="0.6"/>
-  <text x="280" y="181" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#f97316">73 tok/s</text>
+  <!-- RunIT v3 (Q8_0 fused) -->
+  <text x="108" y="138" text-anchor="end" font-family="SF Pro Display,Arial" font-size="12" font-weight="700" fill="#22c55e">RunIT v3</text>
+  <rect x="118" y="123" width="449" height="25" rx="5" fill="#22c55e" opacity="0.85"/>
+  <text x="577" y="140" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#22c55e">224 tok/s ⚡</text>
+  <rect x="630" y="126" width="55" height="19" rx="9" fill="#22c55e20" stroke="#22c55e" stroke-width="0.8"/>
+  <text x="657" y="139" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="bold" fill="#4ade80">3.1×</text>
 
-  <!-- 2.2x speedup callout -->
-  <rect x="510" y="130" width="90" height="24" rx="12" fill="#22c55e" opacity="0.2" stroke="#22c55e" stroke-width="1"/>
-  <text x="555" y="146" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" font-weight="bold" fill="#4ade80">2.2× faster</text>
+  <!-- RunIT v2 (f16 dequant) -->
+  <text x="108" y="168" text-anchor="end" font-family="SF Pro Display,Arial" font-size="12" fill="#86efac">RunIT v2</text>
+  <rect x="118" y="153" width="322" height="25" rx="5" fill="#86efac" opacity="0.5"/>
+  <text x="450" y="170" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#86efac">161 tok/s</text>
 
-  <!-- ═══ LATENCY SECTION ═══ -->
-  <text x="220" y="220" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="14" font-weight="600" fill="#c0c0e0">Latency (ms/tok — lower is better)</text>
+  <!-- RunIT v1 (baseline) -->
+  <text x="108" y="198" text-anchor="end" font-family="SF Pro Display,Arial" font-size="12" fill="#f97316">RunIT v1</text>
+  <rect x="118" y="183" width="146" height="25" rx="5" fill="#f97316" opacity="0.5"/>
+  <text x="274" y="200" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#f97316">73 tok/s</text>
 
-  <!-- Column headers -->
-  <text x="290" y="243" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="600" fill="#f97316">Before</text>
-  <text x="390" y="243" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" font-weight="600" fill="#4ade80">After</text>
+  <!-- Latency comparison -->
+  <text x="220" y="235" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="13" font-weight="600" fill="#c0c0e0">Latency (ms/tok)</text>
+  <text x="200" y="258" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#f97316">v1</text>
+  <text x="290" y="258" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#86efac">v2</text>
+  <text x="380" y="258" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#22c55e">v3</text>
 
-  <!-- avg -->
-  <text x="210" y="264" text-anchor="end" font-family="SF Mono, monospace" font-size="12" fill="#a0a0c0">avg</text>
-  <rect x="230" y="251" width="120" height="18" rx="4" fill="#f9731640"/>
-  <text x="290" y="264" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#f97316">13.79 ms</text>
-  <rect x="360" y="251" width="54" height="18" rx="4" fill="#22c55e40"/>
-  <text x="390" y="264" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#4ade80">6.20 ms</text>
+  <text x="120" y="280" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#aaa">avg</text>
+  <text x="200" y="280" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#f97316">13.79</text>
+  <text x="290" y="280" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#86efac">6.20</text>
+  <text x="380" y="280" text-anchor="end" font-family="SF Mono,monospace" font-size="10" font-weight="bold" fill="#22c55e">4.61</text>
 
-  <!-- p50 -->
-  <text x="210" y="290" text-anchor="end" font-family="SF Mono, monospace" font-size="12" fill="#a0a0c0">p50</text>
-  <rect x="230" y="277" width="120" height="18" rx="4" fill="#f7c94840"/>
-  <text x="290" y="290" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#f7c948">13.81 ms</text>
-  <rect x="360" y="277" width="54" height="18" rx="4" fill="#22c55e40"/>
-  <text x="390" y="290" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#4ade80">6.19 ms</text>
+  <text x="120" y="300" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#aaa">p50</text>
+  <text x="200" y="300" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#f97316">13.81</text>
+  <text x="290" y="300" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#86efac">6.19</text>
+  <text x="380" y="300" text-anchor="end" font-family="SF Mono,monospace" font-size="10" font-weight="bold" fill="#22c55e">4.56</text>
 
-  <!-- p95 -->
-  <text x="210" y="316" text-anchor="end" font-family="SF Mono, monospace" font-size="12" fill="#a0a0c0">p95</text>
-  <rect x="230" y="303" width="126" height="18" rx="4" fill="#e74c3c40"/>
-  <text x="290" y="316" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#e74c3c">14.49 ms</text>
-  <rect x="360" y="303" width="60" height="18" rx="4" fill="#22c55e40"/>
-  <text x="390" y="316" text-anchor="middle" font-family="SF Mono, monospace" font-size="12" fill="#4ade80">6.85 ms</text>
+  <text x="120" y="320" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#aaa">p95</text>
+  <text x="200" y="320" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#f97316">14.49</text>
+  <text x="290" y="320" text-anchor="end" font-family="SF Mono,monospace" font-size="10" fill="#86efac">6.85</text>
+  <text x="380" y="320" text-anchor="end" font-family="SF Mono,monospace" font-size="10" font-weight="bold" fill="#22c55e">5.30</text>
 
-  <!-- ═══ KEY OPTIMIZATIONS ═══ -->
-  <text x="600" y="220" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="14" font-weight="600" fill="#c0c0e0">Key Optimizations</text>
+  <!-- Optimization stages -->
+  <text x="570" y="235" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="13" font-weight="600" fill="#c0c0e0">Optimization Stages</text>
+  <text x="470" y="260" font-family="SF Mono,monospace" font-size="9" fill="#f97316">v1 Kahan GEMV + f32 weights</text>
+  <text x="470" y="278" font-family="SF Mono,monospace" font-size="9" fill="#86efac">v2 simd_sum + half4 + f16 dequant</text>
+  <text x="470" y="296" font-family="SF Mono,monospace" font-size="9" fill="#22c55e">v3 Fused Q8_0 GEMV (on-the-fly)</text>
+  <text x="470" y="318" font-family="SF Mono,monospace" font-size="9" fill="#4ecdc4">   reads 1.06 B/elem vs 2 B/elem</text>
 
-  <text x="520" y="248" font-family="SF Mono, monospace" font-size="10" fill="#4ecdc4">✓ simd_sum() reduction</text>
-  <text x="520" y="268" font-family="SF Mono, monospace" font-size="10" fill="#4ecdc4">✓ Vectorized half4/float4</text>
-  <text x="520" y="288" font-family="SF Mono, monospace" font-size="10" fill="#4ecdc4">✓ Kahan removal (-3 ops/elem)</text>
-  <text x="520" y="308" font-family="SF Mono, monospace" font-size="10" fill="#4ecdc4">✓ f16 weight dequant (2× BW)</text>
-
-  <!-- ═══ FOOTER: Quality ═══ -->
-  <rect x="60" y="340" width="600" height="65" rx="8" fill="#ffffff08" stroke="#ffffff15" stroke-width="1"/>
-  <text x="360" y="362" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="13" font-weight="600" fill="#e0e0e0">✅ Output Quality Verified — All prompts produce coherent, accurate text</text>
-  <text x="360" y="382" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" fill="#8888bb">"Machine learning is a subset of artificial intelligence that involves the development of algorithms</text>
-  <text x="360" y="396" text-anchor="middle" font-family="SF Mono, monospace" font-size="10" fill="#8888bb">and statistical models that enable computers to learn from data without being explicitly programmed."</text>
+  <!-- Quality footer -->
+  <rect x="60" y="345" width="600" height="60" rx="8" fill="#ffffff06" stroke="#ffffff12" stroke-width="1"/>
+  <text x="360" y="367" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="600" fill="#e0e0e0">✅ Output Quality: Perfect coherent text on all prompts at every stage</text>
+  <text x="360" y="387" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">"Machine learning is a subset of artificial intelligence that involves the development of algorithms</text>
+  <text x="360" y="400" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">and statistical models that enable computers to learn from data without being explicitly programmed."</text>
 </svg>
