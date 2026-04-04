@@ -78,6 +78,13 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemm_f16",
     // rope.metal (batch)
     "rope_batch_inplace_f16",
+    // gemv_q8_0.metal (fused Q8_0 dequant — 47% less bandwidth than f16)
+    "gemv_q8_0_f32in_f32out",
+    "gemv_q8_0_add_f32_f32in",
+    "gemv_q8_0_f32in",
+    "gemv_q8_0_f16",
+    "gemv_q8_0_add_f16",
+    "gemv_q8_0_add_f32res_f16",
     // turboquant.metal
     "tq_normalize_f16",
     "tq_rht_f16",

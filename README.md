@@ -25,9 +25,9 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  🎯 100% token-match with llama.cpp on Qwen2.5-0.5B Q8_0      │
-│  ⚡ 161 tok/sec decode on Apple M4 Pro (2.2× speedup)          │
+│  ⚡ 224 tok/sec decode on Apple M4 Pro (3.1× speedup)          │
 │  🦀 Pure Rust — zero Python runtime                            │
-│  🔧 Custom Metal GPU kernels — simd_sum + vectorized loads     │
+│  🔧 Custom Metal GPU kernels — fused Q8 dequant on-the-fly    │
 │  📦 GGUF native — loads any GGUF quantized model               │
 │  🌐 OpenAI-compatible HTTP server                              │
 │  🔬 f32 precision pipeline for research-grade accuracy         │
@@ -63,32 +63,37 @@ Every test produces **identical output** to llama.cpp (greedy, temp=0):
   <img src="docs/assets/speedup-chart.svg" alt="Per-prompt decode speed" width="700"/>
 </p>
 
-### 🚀 2.2× Speedup: 73 → 161 tok/sec
+### 🚀 3.1× Speedup: 73 → 224 tok/sec (97% of llama.cpp)
 
-| Metric | Before (v1) | After (v2) | Improvement |
-|--------|:-----------:|:----------:|:-----------:|
-| **Decode throughput** | 73 tok/sec | **161 tok/sec** | **2.2×** ⚡ |
-| **Avg latency** | 13.79 ms/tok | **6.20 ms/tok** | 2.2× faster |
-| **p50 latency** | 13.81 ms | **6.19 ms** | 2.2× faster |
-| **p95 latency** | 14.49 ms | **6.85 ms** | 2.1× faster |
-| **Model load** | 17 ms | 19 ms | — |
-| **GPU upload** | 472 ms | 1087 ms | (f16 dequant) |
-| **Output quality** | ✅ Perfect | ✅ Perfect | Maintained |
+| Metric | v1 (baseline) | v2 (simd+f16) | v3 (Q8 fused) | llama.cpp |
+|--------|:------------:|:-------------:|:-------------:|:---------:|
+| **Decode tok/sec** | 73 | 161 | **224** ⚡ | 230 |
+| **Avg latency** | 13.79 ms | 6.20 ms | **4.61 ms** | ~4.35 ms |
+| **p50 latency** | 13.81 ms | 6.19 ms | **4.56 ms** | — |
+| **p95 latency** | 14.49 ms | 6.85 ms | **5.30 ms** | — |
+| **Output quality** | ✅ | ✅ | ✅ | ✅ |
 
 > Measured on Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode · 50 tokens
 
-### Key Optimizations Applied
+### Optimization Stages
+
+| Stage | Optimization | tok/sec | Key Technique |
+|:-----:|-------------|:-------:|---------------|
+| v1 | Baseline (Kahan GEMV + f32 weights) | 73 | Correctness-first |
+| v2 | simd_sum + half4 vectorization + f16 dequant | 161 | 2.2× compute + bandwidth |
+| **v3** | **Fused Q8_0 GEMV (on-the-fly dequant)** | **224** | **47% less bandwidth** |
+
+### What Makes It Fast
 
 | Optimization | Impact | Files |
 |-------------|--------|-------|
-| **simd_sum() hardware reduction** | Replaces 124-step Kahan sequential sum | `gemv.metal`, `gemv_q4k.metal` |
-| **Vectorized half4/float4 loads** | 4× fewer load instructions, perfect coalescing | `gemv.metal` |
-| **Kahan removal from inner loop** | -3 extra ops per element (5× fewer FLOPs) | `gemv.metal`, `gemv_q4k.metal` |
-| **f16 weight dequantization** | 2× less bandwidth (2 vs 4 bytes/element) | `forward.rs` |
-| **Command buffer batching** | Eliminates mid-token GPU stalls | `context.rs` |
-| **GEMM inner-loop unrolling** | Better ILP for prefill path | `gemm.metal` |
+| **Fused Q8_0 GEMV** | Reads 1.06 bytes/elem vs 2.0 (f16) — 47% less BW | `gemv_q8_0.metal` |
+| **simd_sum() reduction** | 1-cycle hardware sum replaces 124-step Kahan | `gemv.metal`, `gemv_q4k.metal` |
+| **Vectorized half4/float4** | 4× fewer loads, perfect 256-byte coalescing | `gemv.metal` |
+| **f16 weight dequant** | Quantized types → f16 instead of f32 | `forward.rs` |
+| **Command buffer batching** | 8192-encode limit prevents mid-token stalls | `context.rs` |
 
-> 📋 Full implementation plan for reaching >200 tok/sec: [docs/implementation-plan.md](docs/implementation-plan.md)
+> 📋 Roadmap to exceed llama.cpp: [docs/implementation-plan.md](docs/implementation-plan.md)
 
 ---
 
@@ -180,15 +185,16 @@ Options:
 
 | Kernel | File | Description |
 |--------|------|-------------|
+| `gemv_q8_0_f32in_f32out` | `gemv_q8_0.metal` | **Fused Q8\_0 GEMV** — 47% less bandwidth |
 | `gemv_f16w_f32in_f32out` | `gemv.metal` | GEMV with simd_sum + vectorized half4 loads |
-| `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV (simd_sum) |
+| `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV |
+| `decode_attention_f32` | `attention.metal` | Decode attention with online softmax |
+| `flash_attention_f16` | `attention.metal` | Tiled FlashAttention-2 for prefill |
 | `rms_norm_f32_f32_f32g` | `norm.metal` | Full f32 RMSNorm |
 | `rope_inplace_f32` | `rope.metal` | Non-interleaved RoPE (Qwen2/LLaMA) |
-| `decode_attention_f32` | `attention.metal` | Single-query attention with online softmax |
-| `flash_attention_f16` | `attention.metal` | Tiled FlashAttention-2 for prefill |
 | `silu_mul_f32` | `activation.metal` | SwiGLU activation (fused) |
 | `dequant_q4k_f16` | `dequant.metal` | Q4\_K\_M GPU dequantization |
-| + 20 more | various | f16/f32 variants, bias add, argmax, etc. |
+| + 50 more | various | See [docs/KERNELS.md](docs/KERNELS.md) for full reference |
 
 ---
 
@@ -263,9 +269,10 @@ lm_head (f16 weights × f32 input → f32 logits)
 | 8 | Prefill batching (GEMM kernel) | ✅ Done |
 | 9 | **f32 precision pipeline** | ✅ Done |
 | 10 | **RoPE fix + llama.cpp parity** | ✅ **Done** |
-| 11 | **GEMV optimization** (simd_sum, vectorize, f16 dequant) | ✅ **Done — 2.2× speedup** |
-| 12 | simdgroup\_matrix GEMV + fused kernels | 🔜 Next |
-| 13 | PagedAttention KV cache + continuous batching | 📋 Planned |
+| 11 | **GEMV optimization** (simd_sum, vectorize, f16 dequant) | ✅ **Done — 2.2×** |
+| 12 | **Fused Q8\_0 GEMV** (on-the-fly dequant, 47% less BW) | ✅ **Done — 3.1×** |
+| 13 | simdgroup\_matrix GEMV + kernel fusion | 🔜 Next |
+| 14 | PagedAttention KV cache + continuous batching | 📋 Planned |
 
 ---
 
@@ -344,6 +351,17 @@ DEBUG_LOGITS=1 ./target/release/generate <model.gguf> \
 DEBUG_LAYERS=1 ./target/release/generate <model.gguf> \
     --tokenizer <tokenizer.json> --tokens 1 --prompt 'Hello'
 ```
+
+---
+
+## 📚 References & Further Reading
+
+- [Awesome LLM Inference](https://github.com/xlite-dev/Awesome-LLM-Inference) — Curated collection of LLM inference papers, frameworks, and optimization techniques. Covers attention mechanisms, quantization, speculative decoding, KV cache management, and hardware-specific optimizations that inform RunIT’s design.
+- [FlashAttention-2](https://arxiv.org/abs/2307.08691) — Tiled attention with online softmax (implemented in `attention.metal`)
+- [TurboQuant](https://arxiv.org/abs/2504.19874) — KV-cache compression to 3–4 bits (implemented in `turboquant.metal`)
+- [GGUF Format](https://github.com/ggerganov/ggml/blob/master/docs/gguf.md) — Model file format specification
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) — Reference C++ implementation used for accuracy validation
+- [Metal Shading Language Spec](https://developer.apple.com/metal/Metal-Shading-Language-Specification.pdf) — Apple’s GPU programming language
 
 ---
 

@@ -736,6 +736,11 @@ pub const Q4K_BLOCK_BYTES: usize = 144;
 /// Elements per Q4_K block.
 pub const Q4K_BLOCK_ELEMS: usize = 256;
 
+/// Q8_0 block size in bytes (2-byte f16 scale + 32 int8 values).
+pub const Q8_0_BLOCK_BYTES: usize = 34;
+/// Elements per Q8_0 block.
+pub const Q8_0_BLOCK_ELEMS: usize = 32;
+
 /// Dequantise a Q4_K_M weight tensor from packed bytes into an F16 Metal buffer.
 ///
 /// - `input`    — raw Q4_K bytes: `n_blocks × 144` bytes
@@ -941,6 +946,122 @@ pub fn gemv_q4k_add_f32_f32in(
         enc.set_buffer(1, Some(input),      0);
         enc.set_buffer(2, Some(output),     0);
         enc.set_buffer(3, Some(residual),   0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fused Q8_0 GEMV: reads packed Q8_0 weights (1.06 bytes/elem) and
+// dequantizes on-the-fly. Uses 47% less bandwidth than F16 GEMV.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Q8_0 GEMV: y_f32 = A_q8 * x_f32
+pub fn gemv_q8_0_f32in_f32out(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f32in_f32out", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q8_0 GEMV + f32 residual: y_f32 = A_q8 * x_f32 + res_f32
+pub fn gemv_q8_0_add_f32_f32in(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_add_f32_f32in", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q8_0 GEMV: y_f16 = A_q8 * x_f32
+pub fn gemv_q8_0_f32in(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f32in", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q8_0 GEMV: y_f16 = A_q8 * x_f16
+pub fn gemv_q8_0_f16(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f16", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q8_0 GEMV + f16 residual: y_f16 = A_q8 * x_f16 + res_f16
+pub fn gemv_q8_0_add_f16(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_add_f16", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q8_0 GEMV + f32 residual with f16 input
+pub fn gemv_q8_0_add_f32res_f16(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_add_f32res_f16", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
         enc.set_bytes(4, 4, &m as *const u32 as *const _);
         enc.set_bytes(5, 4, &k as *const u32 as *const _);
         enc.dispatch_thread_groups(
