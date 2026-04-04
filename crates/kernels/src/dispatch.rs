@@ -801,6 +801,228 @@ pub fn gemm_f16(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Fused kernels — reduce dispatch count by combining sequential operations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Fused FFN: gate+up+silu with Q8_0 weights, f32 input/output.
+/// Replaces 3 dispatches (gate_gemv + up_gemv + silu_mul) with 1.
+pub fn fused_ffn_q8_0_f32(
+    ctx: &MetalContext,
+    w_gate: &Buffer, w_up: &Buffer, x_vec: &Buffer, act_out: &Buffer,
+    ff_dim: u32, k: u32,
+) -> Result<()> {
+    const MR: u64 = 4;
+    ctx.encode("fused_ffn_q8_0_f32", |enc| {
+        enc.set_buffer(0, Some(w_gate),  0);
+        enc.set_buffer(1, Some(w_up),    0);
+        enc.set_buffer(2, Some(x_vec),   0);
+        enc.set_buffer(3, Some(act_out), 0);
+        enc.set_bytes(4, 4, &ff_dim as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k      as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((ff_dim as u64) + MR - 1) / MR, height: 1, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Fused FFN: gate+up+silu with f16 weights, f32 input/output.
+pub fn fused_ffn_f16w_f32(
+    ctx: &MetalContext,
+    w_gate: &Buffer, w_up: &Buffer, x_vec: &Buffer, act_out: &Buffer,
+    ff_dim: u32, k: u32,
+) -> Result<()> {
+    const MR: u64 = 4;
+    ctx.encode("fused_ffn_f16w_f32", |enc| {
+        enc.set_buffer(0, Some(w_gate),  0);
+        enc.set_buffer(1, Some(w_up),    0);
+        enc.set_buffer(2, Some(x_vec),   0);
+        enc.set_buffer(3, Some(act_out), 0);
+        enc.set_bytes(4, 4, &ff_dim as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k      as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((ff_dim as u64) + MR - 1) / MR, height: 1, depth: 1 },
+            MTLSize { width: 128, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Fused QK RoPE: apply RoPE to both Q and K in a single dispatch.
+pub fn fused_rope_qk_f32(
+    ctx: &MetalContext,
+    q: &Buffer, k: &Buffer,
+    head_dim: u32, q_heads: u32, kv_heads: u32,
+    pos: u32, theta: f32,
+) -> Result<()> {
+    let tg_width = ((head_dim / 2) as u64).min(32).max(1);
+    let max_heads = q_heads.max(kv_heads);
+    ctx.encode("fused_rope_qk_f32", |enc| {
+        enc.set_buffer(0, Some(q), 0);
+        enc.set_buffer(1, Some(k), 0);
+        enc.set_bytes(2, 4, &head_dim  as *const u32 as *const _);
+        enc.set_bytes(3, 4, &q_heads   as *const u32 as *const _);
+        enc.set_bytes(4, 4, &kv_heads  as *const u32 as *const _);
+        enc.set_bytes(5, 4, &pos       as *const u32 as *const _);
+        enc.set_bytes(6, 4, &theta     as *const f32 as *const _);
+        enc.dispatch_threads(
+            MTLSize { width: (head_dim / 2) as u64, height: max_heads as u64, depth: 1 },
+            MTLSize { width: tg_width, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// simdgroup_matrix GEMM: Y = A @ B^T using AMX hardware (M1+)
+///
+/// Uses 128 threads (4 SIMD groups), each computing an 8×8 sub-tile via
+/// `simdgroup_multiply_accumulate`. 16×16 output tile per threadgroup.
+/// SRAM: 512 bytes for cooperative A/B staging.
+pub fn gemm_f16_simd(
+    ctx: &MetalContext,
+    a: &Buffer, b: &Buffer, y: &Buffer,
+    m: u32, n: u32, k: u32,
+) -> Result<()> {
+    const TG_TILE: u64 = 16;
+    const SIMD_TILE: u64 = 8;
+    let sram_bytes = 2 * TG_TILE * SIMD_TILE * 2; // 2 tiles × 16×8 × sizeof(half)
+    ctx.encode("gemm_f16_simd", |enc| {
+        enc.set_buffer(0, Some(a), 0);
+        enc.set_buffer(1, Some(b), 0);
+        enc.set_buffer(2, Some(y), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &n as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, sram_bytes);
+        enc.dispatch_thread_groups(
+            MTLSize {
+                width:  (n as u64 + TG_TILE - 1) / TG_TILE,
+                height: (m as u64 + TG_TILE - 1) / TG_TILE,
+                depth:  1,
+            },
+            MTLSize { width: 32, height: 4, depth: 1 }, // 128 threads = 4 SIMD groups
+        );
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-row GEMV dispatch — 4 rows per TG, 128 threads
+// Use for M ≥ 128; falls back to standard 32-thread GEMV for small M
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TG_MR: u64 = 128;   // 4 SIMD groups × 32 lanes
+const MR_ROWS: u64 = 4;
+
+/// Multi-row f16 GEMV: y_f16 = A_f16 * x_f16
+pub fn gemv_f16_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f16_mr", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Multi-row f16 GEMV + residual
+pub fn gemv_add_f16_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f16_mr", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Multi-row: y_f32 = A_f16 * x_f32
+pub fn gemv_f16w_f32in_f32out_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f16w_f32in_f32out_mr", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Multi-row: y_f32 = A_f16 * x_f32 + res_f32
+pub fn gemv_add_f32_f16w_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32_f16w_mr", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Multi-row Q8_0 fused: y_f32 = A_q8 * x_f32
+pub fn gemv_q8_0_f32in_f32out_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f32in_f32out_mr", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Multi-row Q8_0 fused + residual: y_f32 = A_q8 * x_f32 + res_f32
+pub fn gemv_q8_0_add_f32_f32in_mr(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_add_f32_f32in_mr", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: ((m as u64) + MR_ROWS - 1) / MR_ROWS, height: 1, depth: 1 },
+            MTLSize { width: TG_MR, height: 1, depth: 1 },
+        );
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Batched RoPE — for prefill (Phase 8)
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -20,6 +20,11 @@ use bare_metal_kernels::{
         gemv_f32_f32out, gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
         gemv_q8_0_f32in_f32out, gemv_q8_0_add_f32_f32in,
         gemv_q8_0_f32in, gemv_q8_0_f16, gemv_q8_0_add_f16, gemv_q8_0_add_f32res_f16,
+        // Multi-row GEMV (4 rows/TG, 128 threads) for M ≥ 128
+        gemv_f16w_f32in_f32out_mr, gemv_add_f32_f16w_mr,
+        gemv_q8_0_f32in_f32out_mr, gemv_q8_0_add_f32_f32in_mr,
+        // Fused kernels (reduce dispatch count)
+        fused_ffn_q8_0_f32, fused_ffn_f16w_f32, fused_rope_qk_f32,
         kv_copy_to_cache_f16, kv_copy_to_cache_f32,
         mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
         rms_norm_f32_f32, rms_norm_f32_f32_f32g,
@@ -108,6 +113,7 @@ impl WeightBuf {
     }
 
     /// GEMV with f32 input, f32 output: for Q/K/V where full precision matters.
+    /// Uses multi-row dispatch (4 rows/TG, 128 threads) for M ≥ 128.
     pub(crate) fn gemv_f32_f32out(
         &self,
         ctx: &MetalContext,
@@ -116,9 +122,14 @@ impl WeightBuf {
         m: u32,
         k: u32,
     ) -> Result<(), ForwardError> {
+        let use_mr = m >= 128;
         match self {
             WeightBuf::F16(buf) => {
-                gemv_f16w_f32in_f32out(ctx, buf, input, output, m, k)?;
+                if use_mr {
+                    gemv_f16w_f32in_f32out_mr(ctx, buf, input, output, m, k)?;
+                } else {
+                    gemv_f16w_f32in_f32out(ctx, buf, input, output, m, k)?;
+                }
             }
             WeightBuf::F32(buf) => {
                 gemv_f32_f32out(ctx, buf, input, output, m, k)?;
@@ -127,7 +138,11 @@ impl WeightBuf {
                 gemv_q4k_f32in_f32out(ctx, raw, input, output, m, k)?;
             }
             WeightBuf::Q8_0 { raw, .. } => {
-                gemv_q8_0_f32in_f32out(ctx, raw, input, output, m, k)?;
+                if use_mr {
+                    gemv_q8_0_f32in_f32out_mr(ctx, raw, input, output, m, k)?;
+                } else {
+                    gemv_q8_0_f32in_f32out(ctx, raw, input, output, m, k)?;
+                }
             }
         }
         Ok(())
@@ -151,8 +166,8 @@ impl WeightBuf {
         Ok(())
     }
 
-    /// Fused GEMV + f32 residual with f32 input:
-    /// `output_f32[i] = (weight * input_f32)[i] + residual_f32[i]`.
+    /// Fused GEMV + f32 residual with f32 input.
+    /// Uses multi-row dispatch (4 rows/TG) for M ≥ 128.
     pub(crate) fn gemv_add_f32(
         &self,
         ctx: &MetalContext,
@@ -162,11 +177,24 @@ impl WeightBuf {
         m: u32,
         k: u32,
     ) -> Result<(), ForwardError> {
+        let use_mr = m >= 128;
         match self {
-            WeightBuf::F16(buf) => gemv_add_f32_f16w(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::F16(buf) => {
+                if use_mr {
+                    gemv_add_f32_f16w_mr(ctx, buf, input, output, residual, m, k)?;
+                } else {
+                    gemv_add_f32_f16w(ctx, buf, input, output, residual, m, k)?;
+                }
+            }
             WeightBuf::F32(buf) => gemv_add_f32_f32w(ctx, buf, input, output, residual, m, k)?,
             WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f32_f32in(ctx, raw, input, output, residual, m, k)?,
-            WeightBuf::Q8_0 { raw, .. } => gemv_q8_0_add_f32_f32in(ctx, raw, input, output, residual, m, k)?,
+            WeightBuf::Q8_0 { raw, .. } => {
+                if use_mr {
+                    gemv_q8_0_add_f32_f32in_mr(ctx, raw, input, output, residual, m, k)?;
+                } else {
+                    gemv_q8_0_add_f32_f32in(ctx, raw, input, output, residual, m, k)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1265,6 +1293,9 @@ impl Executor {
             return Err(ForwardError::InvalidTokenId(token_id));
         }
 
+        let _profile = std::env::var("PROFILE_FORWARD").is_ok();
+        let _t0 = std::time::Instant::now();
+
         // ── 1. Token embedding lookup ──────────────────────────────────────
         let h = cfg.hidden_size;
         unsafe {
@@ -1319,11 +1350,10 @@ impl Executor {
                 add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
             }
 
-            // e) RoPE in-place on f32 Q and K
-            rope_inplace_f32(ctx, &s.q, hd,
-                             cfg.num_attention_heads as u32,
-                             pos, cfg.rope_theta, 1)?;
-            rope_inplace_f32(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
+            // e) Fused RoPE: apply to BOTH Q and K in ONE dispatch
+            fused_rope_qk_f32(ctx, &s.q, &s.k, hd,
+                              cfg.num_attention_heads as u32, n_kv,
+                              pos, cfg.rope_theta)?;
 
             // f) Write f32 K/V into f32 cache — GPU-side scatter
             kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
@@ -1385,10 +1415,23 @@ impl Executor {
                 // Residual: f32 x += f16 moe_out
                 add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                // ── Dense FFN: full f32 intermediates ────────────────────────
-                w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
-                silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                // ── Dense FFN: FUSED gate+up+silu (1 dispatch instead of 3) ────
+                match (&w.ffn_gate[l], &w.ffn_up[l]) {
+                    (WeightBuf::Q8_0 { raw: g_raw, .. }, WeightBuf::Q8_0 { raw: u_raw, .. }) => {
+                        fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
+                    (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {
+                        fused_ffn_f16w_f32(ctx, g_buf, u_buf, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
+                    _ => {
+                        // Fallback: separate dispatches for mixed/unsupported types
+                        w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                        w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                        silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                    }
+                }
                 w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
 
@@ -1416,7 +1459,16 @@ impl Executor {
                  cfg.vocab_size as u32, h as u32)?;
 
         // ── 4. Download f32 logits ───────────────────────────────────────────
+        let _t_encode = _t0.elapsed();
         ctx.flush();
+        let _t_total = _t0.elapsed();
+        if _profile {
+            let cpu_ms = _t_encode.as_secs_f64() * 1000.0;
+            let gpu_ms = (_t_total - _t_encode).as_secs_f64() * 1000.0;
+            let total_ms = _t_total.as_secs_f64() * 1000.0;
+            eprintln!("PROFILE pos={} cpu_encode={:.3}ms gpu_exec={:.3}ms total={:.3}ms",
+                      pos, cpu_ms, gpu_ms, total_ms);
+        }
         let logits = download_f32_buf(&s.logits, cfg.vocab_size);
         Ok(logits)
     }
@@ -1488,10 +1540,10 @@ impl Executor {
                 add_f16_into_f32(ctx, bias, &s.v, kv_dim as u32)?;
             }
 
-            // f32 RoPE
-            rope_inplace_f32(ctx, &s.q, hd,
-                             cfg.num_attention_heads as u32, pos, cfg.rope_theta, 1)?;
-            rope_inplace_f32(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
+            // f32 Fused QK RoPE (1 dispatch instead of 2)
+            fused_rope_qk_f32(ctx, &s.q, &s.k, hd,
+                              cfg.num_attention_heads as u32, n_kv,
+                              pos, cfg.rope_theta)?;
 
             // f32 KV cache scatter
             kv_copy_to_cache_f32(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
@@ -1539,10 +1591,22 @@ impl Executor {
                 }
                 add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                // Dense FFN: full f32 intermediates
-                w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
-                silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                // Dense FFN: FUSED gate+up+silu (1 dispatch instead of 3)
+                match (&w.ffn_gate[l], &w.ffn_up[l]) {
+                    (WeightBuf::Q8_0 { raw: g_raw, .. }, WeightBuf::Q8_0 { raw: u_raw, .. }) => {
+                        fused_ffn_q8_0_f32(ctx, g_raw, u_raw, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
+                    (WeightBuf::F16(g_buf), WeightBuf::F16(u_buf)) => {
+                        fused_ffn_f16w_f32(ctx, g_buf, u_buf, &s.x_norm2, &s.act,
+                                           ff_dim as u32, h as u32)?;
+                    }
+                    _ => {
+                        w.ffn_gate[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                        w.ffn_up[l].gemv_f32_f32out(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                        silu_mul_f32(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
+                    }
+                }
                 w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
         }
