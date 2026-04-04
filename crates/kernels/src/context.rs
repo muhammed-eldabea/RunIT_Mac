@@ -42,6 +42,8 @@ pub const KERNEL_NAMES: &[&str] = &[
     // norm.metal (f32 variants)
     "rms_norm_f32in_f16out",
     "rms_norm_f32_f32",
+    // norm.metal (f32 gamma)
+    "rms_norm_f32_f32_f32g",
     // activation.metal (f32 residual)
     "add_f16_into_f32",
     // gemv.metal (f32 variants)

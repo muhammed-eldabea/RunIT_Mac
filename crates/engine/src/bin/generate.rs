@@ -136,6 +136,9 @@ fn main() -> anyhow::Result<()> {
         let bos = cfg.bos_token_id.unwrap_or(1);
         if ids.is_empty() { ids.push(bos); }
         println!("Prompt: {:?} ({} tokens)", text, ids.len());
+        if std::env::var("DEBUG_LOGITS").is_ok() {
+            eprintln!("Token IDs: {:?}", ids);
+        }
         let first_token = ids[0];
         (ids, first_token)
     } else {
@@ -159,7 +162,7 @@ fn main() -> anyhow::Result<()> {
     println!("KV    : {cache_desc}  {kv_mb:.1} MB  (max_seq={max_seq})");
 
     // ── Sampler config ────────────────────────────────────────────────────────
-    let sampler_cfg = SamplerConfig { temperature, top_k, top_p, seed, repetition_penalty: rep_penalty };
+    let sampler_cfg = SamplerConfig { temperature, top_k, top_p, seed, repetition_penalty: rep_penalty, min_tokens: 3 };
 
     // ── Generation ────────────────────────────────────────────────────────────
     println!("\nGenerating {num_tokens} tokens (warmup={warmup_steps})…");
@@ -182,7 +185,7 @@ fn main() -> anyhow::Result<()> {
         let mut kv = KvCache::new(&executor.ctx, cfg, max_seq);
         run_loop_std(&executor, &mut kv, &prompt_ids, num_tokens, warmup_steps,
                      &sampler_cfg, &special, &mut rng,
-                     &mut step_times, &mut generated_ids)?;
+                     &mut step_times, &mut generated_ids, &tokenizer)?;
     }
 
     // ── Print generated text ──────────────────────────────────────────────────
@@ -238,14 +241,33 @@ fn run_loop_std(
     rng:          &mut bare_metal_engine::sampler::SimpleRng,
     step_times:   &mut Vec<std::time::Duration>,
     generated:    &mut Vec<u32>,
+    tokenizer:    &Option<bare_metal_tokenizer::Tokenizer>,
 ) -> anyhow::Result<()> {
     use bare_metal_engine::sampler::sample;
 
+    let eos_ids = vec![special.im_end, special.eos];
+
     // Process prompt token-by-token (no prefill — f32 decode path for precision)
+    let debug_logits = std::env::var("DEBUG_LOGITS").is_ok();
     let (start_pos, mut next_token) = if prompt_ids.len() > 1 {
         let t0 = std::time::Instant::now();
+        // Use forward() instead of forward_greedy() for all prompt tokens
+        // so we can inspect logits at every position
         for (i, &tid) in prompt_ids[..prompt_ids.len()-1].iter().enumerate() {
-            executor.forward_greedy(tid, i as u32, kv)?;
+            if debug_logits {
+                let logits = executor.forward(tid, i as u32, kv)?;
+                let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                let tok = tokenizer.as_ref();
+                eprint!("   prompt pos {i:2} (tok {tid:6}):");
+                for &(idx, val) in &indexed[..5.min(indexed.len())] {
+                    let text = tok.map(|t| t.decode(&[idx as u32], true).unwrap_or_default()).unwrap_or_default();
+                    eprint!(" {}({:.2}){:?}", idx, val, text);
+                }
+                eprintln!();
+            } else {
+                executor.forward_greedy(tid, i as u32, kv)?;
+            }
         }
         let last = *prompt_ids.last().unwrap();
         let pos = (prompt_ids.len() - 1) as u32;
@@ -253,7 +275,19 @@ fn run_loop_std(
         let elapsed = t0.elapsed();
         if warmup_steps == 0 { step_times.push(elapsed); }
 
-        let next = sample(&logits, sampler_cfg, &[], rng);
+        if debug_logits {
+            let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let tok = tokenizer.as_ref();
+            eprint!("   prompt pos {pos:2} (tok {last:6}):");
+            for &(idx, val) in &indexed[..5.min(indexed.len())] {
+                let text = tok.map(|t| t.decode(&[idx as u32], true).unwrap_or_default()).unwrap_or_default();
+                eprint!(" {}({:.2}){:?}", idx, val, text);
+            }
+            eprintln!();
+        }
+
+        let next = sample(&logits, sampler_cfg, &[], &eos_ids, rng);
         (prompt_ids.len() as u32, next)
     } else {
         (0_u32, prompt_ids[0])
@@ -261,6 +295,11 @@ fn run_loop_std(
 
     let mut step = 0usize;
     let mut pos  = start_pos;
+
+    // Add the first generated token (from prompt processing) to the output
+    if prompt_ids.len() > 1 {
+        generated.push(next_token);
+    }
 
     while step < num_tokens {
         let t0 = std::time::Instant::now();
@@ -282,7 +321,20 @@ fn run_loop_std(
             elapsed.as_secs_f64() * 1000.0,
         );
 
-        let sampled = sample(&logits, sampler_cfg, generated.as_slice(), rng);
+        // Debug: dump top-10 logits for diagnosing wrong token predictions
+        if std::env::var("DEBUG_LOGITS").is_ok() {
+            let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
+            indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            let tok = tokenizer.as_ref();
+            eprint!("   top10:");
+            for &(idx, val) in &indexed[..10.min(indexed.len())] {
+                let text = tok.map(|t| t.decode(&[idx as u32], true).unwrap_or_default()).unwrap_or_default();
+                eprint!(" {}({:.2}){:?}", idx, val, text);
+            }
+            eprintln!();
+        }
+
+        let sampled = sample(&logits, sampler_cfg, generated.as_slice(), &eos_ids, rng);
         generated.push(sampled);
 
         pos  += 1;
@@ -333,7 +385,8 @@ fn run_loop_tq(
             elapsed.as_secs_f64() * 1000.0,
         );
 
-        let sampled = sample(&logits_f32, sampler_cfg, generated.as_slice(), rng);
+        let eos_ids = vec![special.im_end, special.eos];
+        let sampled = sample(&logits_f32, sampler_cfg, generated.as_slice(), &eos_ids, rng);
         generated.push(sampled);
         pos += 1;
 

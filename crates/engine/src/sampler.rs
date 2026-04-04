@@ -40,25 +40,37 @@ pub struct SamplerConfig {
     pub seed: u64,
     /// Repetition penalty (1.0 = disabled, 1.1-1.3 typical)
     pub repetition_penalty: f32,
+    /// Minimum number of tokens before EOS is allowed (0 = no minimum)
+    pub min_tokens: usize,
 }
 
 impl Default for SamplerConfig {
     fn default() -> Self {
-        Self { temperature: 1.0, top_k: 40, top_p: 0.95, seed: 42, repetition_penalty: 1.1 }
+        Self { temperature: 1.0, top_k: 40, top_p: 0.95, seed: 42, repetition_penalty: 1.1, min_tokens: 1 }
     }
 }
 
 impl SamplerConfig {
-    pub fn greedy() -> Self { Self { temperature: 0.0, repetition_penalty: 1.1, ..Default::default() } }
+    pub fn greedy() -> Self { Self { temperature: 0.0, repetition_penalty: 1.1, min_tokens: 1, ..Default::default() } }
 }
 
 // ── Core sampling ────────────────────────────────────────────────────────────
 
 /// Sample the next token from f32 logits using the given config, context, and RNG.
-pub fn sample(logits: &[f32], cfg: &SamplerConfig, context: &[u32], rng: &mut SimpleRng) -> u32 {
+/// `eos_ids` are token IDs that should be suppressed until `min_tokens` have been generated.
+pub fn sample(logits: &[f32], cfg: &SamplerConfig, context: &[u32], eos_ids: &[u32], rng: &mut SimpleRng) -> u32 {
     let mut scores: Vec<f32> = logits.to_vec();
 
-    // Step 0: repetition penalty
+    // Step 0a: suppress EOS tokens if below min_tokens
+    if context.len() < cfg.min_tokens {
+        for &eos in eos_ids {
+            if (eos as usize) < scores.len() {
+                scores[eos as usize] = f32::NEG_INFINITY;
+            }
+        }
+    }
+
+    // Step 0b: repetition penalty
     if cfg.repetition_penalty != 1.0 {
         apply_repetition_penalty(&mut scores, context, cfg.repetition_penalty);
     }
@@ -163,7 +175,7 @@ mod tests {
         let logits: Vec<f32> = (0..10).map(|i| i as f32).collect();
         let cfg = SamplerConfig::greedy();
         let mut rng = SimpleRng::new(42);
-        assert_eq!(sample(&logits, &cfg, &[], &mut rng), 9);
+        assert_eq!(sample(&logits, &cfg, &[], &[], &mut rng), 9);
     }
 
     #[test]

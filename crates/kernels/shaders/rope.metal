@@ -4,10 +4,12 @@ using namespace metal;
 // ─────────────────────────────────────────────────────────────────────────────
 // Rotary Position Embeddings (RoPE) — in-place on Q or K
 //
-// For each pair (2i, 2i+1) in a head at sequence position pos:
+// NON-INTERLEAVED pairing (Qwen2/LLaMA standard):
+// For each pair index i in [0, head_dim/2):
+//   Elements paired are (i, i + head_dim/2)
 //   freq    = pos / theta^(2i / head_dim)
-//   x[2i]   =  x[2i]   * cos(freq) - x[2i+1] * sin(freq)
-//   x[2i+1] =  x[2i+1] * cos(freq) + x[2i]   * sin(freq)
+//   x[i]          =  x[i]          * cos(freq) - x[i+half] * sin(freq)
+//   x[i+half]     =  x[i+half]     * cos(freq) + x[i]      * sin(freq)
 //
 // Launched with:
 //   Grid  : [head_dim/2, n_heads, batch*seq_len]
@@ -29,19 +31,21 @@ kernel void rope_inplace_f16(
 
     if (pair >= head_dim / 2) return;
 
-    // Offset into the contiguous tensor
-    uint base = (tok_idx * n_heads + head) * head_dim + pair * 2;
+    uint half_dim = head_dim / 2;
+    uint head_base = (tok_idx * n_heads + head) * head_dim;
+    uint idx0 = head_base + pair;              // first element
+    uint idx1 = head_base + pair + half_dim;   // paired element in second half
 
-    float x0 = float(x[base]);
-    float x1 = float(x[base + 1]);
+    float x0 = float(x[idx0]);
+    float x1 = float(x[idx1]);
 
     // Frequency for this pair
     float freq = float(seq_pos) / pow(theta, float(2 * pair) / float(head_dim));
     float c = cos(freq);
     float s = sin(freq);
 
-    x[base]     = half(x0 * c - x1 * s);
-    x[base + 1] = half(x1 * c + x0 * s);
+    x[idx0] = half(x0 * c - x1 * s);
+    x[idx1] = half(x1 * c + x0 * s);
 }
 
 // f32 variant of RoPE — reads/writes float instead of half.
@@ -60,17 +64,20 @@ kernel void rope_inplace_f32(
 
     if (pair >= head_dim / 2) return;
 
-    uint base = (tok_idx * n_heads + head) * head_dim + pair * 2;
+    uint half_dim = head_dim / 2;
+    uint head_base = (tok_idx * n_heads + head) * head_dim;
+    uint idx0 = head_base + pair;
+    uint idx1 = head_base + pair + half_dim;
 
-    float x0 = x[base];
-    float x1 = x[base + 1];
+    float x0 = x[idx0];
+    float x1 = x[idx1];
 
     float freq = float(seq_pos) / pow(theta, float(2 * pair) / float(head_dim));
     float c = cos(freq);
     float s = sin(freq);
 
-    x[base]     = x0 * c - x1 * s;
-    x[base + 1] = x1 * c + x0 * s;
+    x[idx0] = x0 * c - x1 * s;
+    x[idx1] = x1 * c + x0 * s;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,15 +104,18 @@ kernel void rope_batch_inplace_f16(
     if (pair >= head_dim / 2) return;
 
     uint abs_pos = start_pos + seq_idx;
-    uint base    = (seq_idx * n_heads + head) * head_dim + pair * 2;
+    uint half_dim = head_dim / 2;
+    uint head_base = (seq_idx * n_heads + head) * head_dim;
+    uint idx0 = head_base + pair;
+    uint idx1 = head_base + pair + half_dim;
 
-    float x0 = float(x[base]);
-    float x1 = float(x[base + 1]);
+    float x0 = float(x[idx0]);
+    float x1 = float(x[idx1]);
 
     float freq = float(abs_pos) / pow(theta, float(2 * pair) / float(head_dim));
     float c = cos(freq);
     float s = sin(freq);
 
-    x[base]     = half(x0 * c - x1 * s);
-    x[base + 1] = half(x1 * c + x0 * s);
+    x[idx0] = half(x0 * c - x1 * s);
+    x[idx1] = half(x1 * c + x0 * s);
 }

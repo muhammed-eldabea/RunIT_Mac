@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 280" fill="none">
+  <defs>
+    <linearGradient id="pbg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0f23" />
+      <stop offset="100%" style="stop-color:#1a1a3e" />
+    </linearGradient>
+  </defs>
+  
+  <rect width="700" height="280" rx="12" fill="url(#pbg)"/>
+  
+  <!-- Title -->
+  <text x="350" y="30" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="16" font-weight="700" fill="#e0e0e0">Decode Performance Comparison</text>
+  <text x="350" y="48" text-anchor="middle" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">Apple M4 Pro · Qwen2.5-0.5B Q8_0 · tokens/sec (higher = better)</text>
+  
+  <!-- Bar chart: horizontal bars -->
+  <!-- llama.cpp: 230 tok/s -->
+  <text x="55" y="100" text-anchor="end" font-family="SF Pro Display, Arial" font-size="13" fill="#e0e0e0">llama.cpp</text>
+  <rect x="65" y="85" width="460" height="28" rx="6" fill="#4ecdc4" opacity="0.85"/>
+  <text x="535" y="104" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#4ecdc4">230 tok/s</text>
+  
+  <!-- RunIT: 75 tok/s -->
+  <text x="55" y="150" text-anchor="end" font-family="SF Pro Display, Arial" font-size="13" fill="#e0e0e0">RunIT</text>
+  <rect x="65" y="135" width="150" height="28" rx="6" fill="#ff6b35" opacity="0.85"/>
+  <text x="225" y="154" font-family="SF Mono, monospace" font-size="14" font-weight="bold" fill="#ff6b35">75 tok/s</text>
+  
+  <!-- Latency comparison -->
+  <text x="350" y="195" text-anchor="middle" font-family="SF Pro Display, Arial" font-size="14" font-weight="600" fill="#e0e0e0">Latency Profile</text>
+  
+  <!-- Latency bars -->
+  <text x="120" y="225" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">avg latency</text>
+  <rect x="130" y="213" width="80" height="18" rx="4" fill="#ff6b3560"/>
+  <text x="220" y="226" font-family="SF Mono, monospace" font-size="11" fill="#ff6b35">13.4 ms</text>
+  
+  <text x="120" y="250" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">p50</text>
+  <rect x="130" y="238" width="80" height="18" rx="4" fill="#f7c94860"/>
+  <text x="220" y="251" font-family="SF Mono, monospace" font-size="11" fill="#f7c948">13.4 ms</text>
+  
+  <text x="120" y="275" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">p95</text>
+  <rect x="130" y="263" width="82" height="18" rx="4" fill="#e74c3c60"/>
+  <text x="222" y="276" font-family="SF Mono, monospace" font-size="11" fill="#e74c3c">13.5 ms</text>
+  
+  <!-- Pipeline stages -->
+  <text x="470" y="225" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">model load</text>
+  <rect x="480" y="213" width="30" height="18" rx="4" fill="#22c55e60"/>
+  <text x="520" y="226" font-family="SF Mono, monospace" font-size="11" fill="#22c55e">17 ms</text>
+  
+  <text x="470" y="250" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">GPU upload</text>
+  <rect x="480" y="238" width="100" height="18" rx="4" fill="#3b82f660"/>
+  <text x="590" y="251" font-family="SF Mono, monospace" font-size="11" fill="#3b82f6">502 ms</text>
+  
+  <text x="470" y="275" text-anchor="end" font-family="SF Mono, monospace" font-size="11" fill="#8888bb">KV cache</text>
+  <rect x="480" y="263" width="20" height="18" rx="4" fill="#a855f760"/>
+  <text x="510" y="276" font-family="SF Mono, monospace" font-size="11" fill="#a855f7">0.8 MB</text>
+</svg>

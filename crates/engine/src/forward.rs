@@ -20,7 +20,7 @@ use bare_metal_kernels::{
         gemv_f32_f32out, gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
         kv_copy_to_cache_f16, kv_copy_to_cache_f32,
         mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
-        rms_norm_f32_f32,
+        rms_norm_f32_f32, rms_norm_f32_f32_f32g,
         rope_inplace_f16, rope_inplace_f32,
         scale_accumulate_f16, silu_mul_f16, silu_mul_f32,
         Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS,
@@ -188,7 +188,7 @@ impl WeightBuf {
 }
 
 pub(crate) struct LayerWeights {
-    pub(crate) tok_emb:     metal::Buffer,              // [vocab_size, hidden_size] f16 (always F16 for embedding lookup)
+    pub(crate) tok_emb:     metal::Buffer,              // [vocab_size, hidden_size] f32 (or f16 for native F16 models)
     pub(crate) output_norm: metal::Buffer,              // [hidden_size] f16
     pub(crate) lm_head:     WeightBuf,                  // [vocab_size, hidden_size]
 
@@ -281,8 +281,11 @@ pub struct Executor {
     pub config: ModelConfig,
     scratch: DecodeScratch,
     /// Actual expert FFN dimension (derived from tensor size for MoE models).
-    /// May differ from config.intermediate_size.
     pub(crate) expert_ff_dim: usize,
+    /// Whether tok_emb is stored as f32 (true for quantized models) or f16.
+    tok_emb_f32: bool,
+    /// Whether norm weights are f32.
+    norm_f32: bool,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -989,9 +992,24 @@ impl Executor {
         let cfg = model.config.clone();
         let n = cfg.num_hidden_layers;
 
-        // Global weights
-        let tok_emb     = upload_weight(&ctx, model, "token_embd.weight")?;
-        let output_norm = upload_weight(&ctx, model, "output_norm.weight")?;
+        // Global weights — token embedding stored as f32 for precision
+        let tok_emb = if let Some(f32_buf) = upload_weight_as_f32(&ctx, model, "token_embd.weight")? {
+            f32_buf
+        } else {
+            // Native F16 embedding — keep as-is (rare)
+            upload_weight(&ctx, model, "token_embd.weight")?
+        };
+        let tok_emb_is_f32 = {
+            let t = model.tensors.get("token_embd.weight").unwrap();
+            t.dtype != DType::F16
+        };
+        // Norm weights: prefer f32 for full precision (F32 in GGUF → keep as f32)
+        let output_norm = upload_weight_as_f32(&ctx, model, "output_norm.weight")?
+            .unwrap_or_else(|| upload_weight(&ctx, model, "output_norm.weight").unwrap());
+        let norm_is_f32 = {
+            let t = model.tensors.get("output_norm.weight").unwrap();
+            t.dtype != DType::F16
+        };
 
         let h      = cfg.hidden_size as u32;
         let q_dim  = (cfg.num_attention_heads * cfg.head_dim) as u32;
@@ -1002,6 +1020,8 @@ impl Executor {
         // lm_head may be tied to token_embd (Qwen2 ties them)
         let lm_head = if model.tensors.contains_key("output.weight") {
             upload_weight_wb(&ctx, model, "output.weight", vocab, h)?
+        } else if tok_emb_is_f32 {
+            WeightBuf::F32(upload_weight_as_f32(&ctx, model, "token_embd.weight")?.unwrap())
         } else {
             WeightBuf::F16(upload_weight(&ctx, model, "token_embd.weight")?)
         };
@@ -1029,7 +1049,10 @@ impl Executor {
         let n_experts = cfg.num_experts;
 
         for l in 0..n {
-            attn_norm.push(upload_weight(&ctx, model, &format!("blk.{l}.attn_norm.weight"))?);
+            attn_norm.push(
+                upload_weight_as_f32(&ctx, model, &format!("blk.{l}.attn_norm.weight"))?
+                    .unwrap_or_else(|| upload_weight(&ctx, model, &format!("blk.{l}.attn_norm.weight")).unwrap())
+            );
             attn_q.push(upload_weight_wb(&ctx, model, &format!("blk.{l}.attn_q.weight"), q_dim, h)?);
             attn_k.push(upload_weight_wb(&ctx, model, &format!("blk.{l}.attn_k.weight"), kv_dim, h)?);
             attn_v.push(upload_weight_wb(&ctx, model, &format!("blk.{l}.attn_v.weight"), kv_dim, h)?);
@@ -1037,7 +1060,10 @@ impl Executor {
             attn_k_bias.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_k.bias"))?);
             attn_v_bias.push(upload_optional(&ctx, model, &format!("blk.{l}.attn_v.bias"))?);
             attn_out.push(upload_weight_wb(&ctx, model, &format!("blk.{l}.attn_output.weight"), h, q_dim)?);
-            ffn_norm.push(upload_weight(&ctx, model, &format!("blk.{l}.ffn_norm.weight"))?);
+            ffn_norm.push(
+                upload_weight_as_f32(&ctx, model, &format!("blk.{l}.ffn_norm.weight"))?
+                    .unwrap_or_else(|| upload_weight(&ctx, model, &format!("blk.{l}.ffn_norm.weight")).unwrap())
+            );
 
             if is_moe {
                 // MoE: router + per-expert FFN weights
@@ -1173,6 +1199,8 @@ impl Executor {
             config: cfg,
             scratch,
             expert_ff_dim: actual_ff_dim,
+            tok_emb_f32: tok_emb_is_f32,
+            norm_f32: norm_is_f32,
         })
     }
 
@@ -1198,14 +1226,18 @@ impl Executor {
             return Err(ForwardError::InvalidTokenId(token_id));
         }
 
-        // ── 1. Token embedding lookup (f16 → f32 widening) ─────────────────
+        // ── 1. Token embedding lookup ──────────────────────────────────────
         let h = cfg.hidden_size;
         unsafe {
-            let src = (self.weights.tok_emb.contents() as *const f16)
-                .add(token_id as usize * h);
             let dst = s.x.contents() as *mut f32;
-            for i in 0..h {
-                *dst.add(i) = (*src.add(i)).to_f32();
+            if self.tok_emb_f32 {
+                let src = (self.weights.tok_emb.contents() as *const f32)
+                    .add(token_id as usize * h);
+                std::ptr::copy_nonoverlapping(src, dst, h);
+            } else {
+                let src = (self.weights.tok_emb.contents() as *const f16)
+                    .add(token_id as usize * h);
+                for i in 0..h { *dst.add(i) = (*src.add(i)).to_f32(); }
             }
         }
 
@@ -1222,8 +1254,13 @@ impl Executor {
             let w = &self.weights;
 
             // a) Attention pre-norm (f32 → f32)
-            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
-                         cfg.rms_norm_eps, h as u32, 1)?;
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
 
             // b) Q projection: f32 input → f32 output (full precision)
             w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
@@ -1264,8 +1301,13 @@ impl Executor {
             w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
 
             // i) FFN pre-norm (f32 → f32)
-            rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
-                         cfg.rms_norm_eps, h as u32, 1)?;
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
 
             if cfg.is_moe() {
                 // ── MoE FFN: router → top-k → sparse expert dispatch ─────────
@@ -1311,14 +1353,26 @@ impl Executor {
                 w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
 
+            // Per-layer diagnostic: dump x[0..8] after each layer
+            if std::env::var("DEBUG_LAYERS").is_ok() {
+                ctx.flush();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..8).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("L{:02} x[0..8]: {:?}", l, xv);
+            }
         }
 
         // All layers done — advance KV cache position.
         kv.advance();
 
         // ── 3. Final norm + lm_head (full f32 logits for precise ranking) ────
-        rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
-                     cfg.rms_norm_eps, h as u32, 1)?;
+        if self.norm_f32 {
+            rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        } else {
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        }
         self.weights.lm_head.gemv_f32_f32out(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
 
@@ -1350,10 +1404,16 @@ impl Executor {
 
         let h = cfg.hidden_size;
         unsafe {
-            let src = (self.weights.tok_emb.contents() as *const f16)
-                .add(token_id as usize * h);
             let dst = s.x.contents() as *mut f32;
-            for i in 0..h { *dst.add(i) = (*src.add(i)).to_f32(); }
+            if self.tok_emb_f32 {
+                let src = (self.weights.tok_emb.contents() as *const f32)
+                    .add(token_id as usize * h);
+                std::ptr::copy_nonoverlapping(src, dst, h);
+            } else {
+                let src = (self.weights.tok_emb.contents() as *const f16)
+                    .add(token_id as usize * h);
+                for i in 0..h { *dst.add(i) = (*src.add(i)).to_f32(); }
+            }
         }
 
         let q_dim  = cfg.num_attention_heads * cfg.head_dim;
@@ -1367,8 +1427,13 @@ impl Executor {
         for l in 0..cfg.num_hidden_layers {
             let w = &self.weights;
 
-            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
-                         cfg.rms_norm_eps, h as u32, 1)?;
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
 
             // f32 Q/K/V projections
             w.attn_q[l].gemv_f32_f32out(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
@@ -1402,8 +1467,13 @@ impl Executor {
             // f32 output projection + f32 residual
             w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
 
-            rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
-                         cfg.rms_norm_eps, h as u32, 1)?;
+            if self.norm_f32 {
+                rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            } else {
+                rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+                             cfg.rms_norm_eps, h as u32, 1)?;
+            }
 
             if cfg.is_moe() {
                 let n_exp = cfg.num_experts;
@@ -1441,8 +1511,13 @@ impl Executor {
         kv.advance();
 
         // Use f32→f32 norm then f32-input GEMV for maximum lm_head precision
-        rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
-                     cfg.rms_norm_eps, h as u32, 1)?;
+        if self.norm_f32 {
+            rms_norm_f32_f32_f32g(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        } else {
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &self.weights.output_norm,
+                         cfg.rms_norm_eps, h as u32, 1)?;
+        }
         self.weights.lm_head.gemv_f32in(ctx, &s.x_norm, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
 

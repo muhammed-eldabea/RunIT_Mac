@@ -173,6 +173,31 @@ pub fn rms_norm_f32_f32(
     })
 }
 
+/// RMSNorm f32→f32 with f32 gamma (full precision norm weights)
+pub fn rms_norm_f32_f32_f32g(
+    ctx: &MetalContext,
+    x: &Buffer,
+    y: &Buffer,
+    gamma: &Buffer,
+    eps: f32,
+    hidden: u32,
+    num_rows: u32,
+) -> Result<()> {
+    let sram_bytes = TG_ELEM * std::mem::size_of::<f32>() as u64;
+    ctx.encode("rms_norm_f32_f32_f32g", |enc| {
+        enc.set_buffer(0, Some(x),     0);
+        enc.set_buffer(1, Some(y),     0);
+        enc.set_buffer(2, Some(gamma), 0);
+        enc.set_bytes(3, 4, &eps    as *const f32 as *const _);
+        enc.set_bytes(4, 4, &hidden as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, sram_bytes);
+        enc.dispatch_thread_groups(
+            MTLSize { width: num_rows as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_ELEM,         height: 1, depth: 1 },
+        );
+    })
+}
+
 /// Full f32 GEMV with f32 output: y_f32 = A_f32 * x_f32
 pub fn gemv_f32_f32out(
     ctx: &MetalContext,

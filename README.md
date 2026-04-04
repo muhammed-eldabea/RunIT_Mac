@@ -1,47 +1,119 @@
-# Bare-Metal MX LLM
+<p align="center">
+  <img src="docs/assets/logo.svg" alt="RunIT — LLM Inference Engine" width="700"/>
+</p>
 
-A from-scratch LLM inference engine written in **Rust + Metal**, targeting Apple M-series
-chips (specifically M4 Pro 24 GB). Runs [Qwen2.5-Coder-7B-Instruct Q4\_K\_M](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-GGUF)
-natively without Python, PyTorch, or llama.cpp.
+<p align="center">
+  <strong>From-scratch LLM inference engine in Rust + Metal for Apple Silicon</strong>
+</p>
 
----
+<p align="center">
+  <a href="#-quickstart"><img src="https://img.shields.io/badge/macOS-14%2B-blue?logo=apple&logoColor=white" alt="macOS 14+"/></a>
+  <a href="#-quickstart"><img src="https://img.shields.io/badge/Rust-1.78%2B-orange?logo=rust&logoColor=white" alt="Rust 1.78+"/></a>
+  <a href="#-quickstart"><img src="https://img.shields.io/badge/Metal_GPU-Apple_Silicon-blueviolet?logo=apple" alt="Metal GPU"/></a>
+  <a href="docs/COMPARISON.md"><img src="https://img.shields.io/badge/llama.cpp-100%25_match-brightgreen" alt="llama.cpp match"/></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"/></a>
+</p>
 
-## Goals
-
-| Goal | Status |
-|------|--------|
-| Zero Python runtime — pure Rust | Done |
-| Metal GPU kernels (MSL) | Done |
-| Q4\_K\_M weight dequantisation on GPU | Done (Phase 4) |
-| KV cache in unified memory | Done (Phase 3) |
-| Greedy / token-by-token decode | Done |
-| TurboQuant KV-cache compression (3–4 bit) | Done (Phase 5) |
-| Text I/O — tokenizer, temperature/top-p sampling | Done (Phase 6) |
-| OpenAI-compatible HTTP server | Done (Phase 7) |
-| Prefill batching (GEMM kernel) | Done (Phase 8) |
+<p align="center">
+  <em>No Python. No PyTorch. No llama.cpp dependency. Pure Rust + Metal shaders.</em>
+</p>
 
 ---
 
-## Quick Start
+## ✨ Highlights
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  🎯 100% token-match with llama.cpp on Qwen2.5-0.5B Q8_0      │
+│  ⚡ 75 tok/sec decode on Apple M4 Pro                          │
+│  🦀 Pure Rust — zero Python runtime                            │
+│  🔧 Custom Metal GPU kernels (MSL)                             │
+│  📦 GGUF native — loads any GGUF quantized model               │
+│  🌐 OpenAI-compatible HTTP server                              │
+│  🔬 f32 precision pipeline for research-grade accuracy         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 📊 Accuracy: Token-Perfect Match with llama.cpp
+
+<p align="center">
+  <img src="docs/assets/accuracy-chart.svg" alt="15/15 position accuracy" width="680"/>
+</p>
+
+Every test produces **identical output** to llama.cpp (greedy, temp=0):
+
+| Prompt | llama.cpp | RunIT Engine | Match |
+|--------|-----------|-------------|:-----:|
+| "What is 2+2?" | 2 + 2 equals 4. | 2 + 2 equals 4. | ✅ |
+| "Capital of France?" | The capital of France is Paris. | The capital of France is Paris. | ✅ |
+| "Capital of Japan?" | The capital of Japan is Tokyo. | The capital of Japan is Tokyo. | ✅ |
+| "What is machine learning?" | Machine learning is a subset of AI... (92 tok) | Machine learning is a subset of AI... (92 tok) | ✅ |
+| "Translate to French" | Bonjour, comment ça va ? | Bonjour, comment ça va ? | ✅ |
+| "Write a poem about the moon" | The moon, a celestial sight... | The moon, a celestial sight... | ✅ |
+
+> 📋 Full per-position logit comparison: [docs/COMPARISON.md](docs/COMPARISON.md)
+
+## ⚡ Performance
+
+<p align="center">
+  <img src="docs/assets/perf-chart.svg" alt="Performance comparison" width="680"/>
+</p>
+
+| Metric | Value |
+|--------|-------|
+| **Decode throughput** | 75 tok/sec |
+| **Avg latency** | 13.4 ms/tok |
+| **p50 / p95 latency** | 13.4 / 13.5 ms |
+| **Model load** | 17 ms (mmap) |
+| **GPU upload** | 502 ms |
+| **KV cache** | 0.8 MB (f32, flat) |
+
+> Measured on Apple M4 Pro · Qwen2.5-0.5B Q8_0 · greedy decode
+
+---
+
+## 🚀 Quickstart
+
+### Prerequisites
+
+- macOS 14+ with Apple Silicon (M1/M2/M3/M4)
+- Rust 1.78+ (`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`)
+- Xcode Command Line Tools (`xcode-select --install`)
+
+### Download a Model
 
 ```bash
-# Download model and tokenizer (requires huggingface-cli)
+# Qwen2.5-0.5B Q8_0 (recommended for testing — 675 MB)
+huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct-GGUF \
+    qwen2.5-0.5b-instruct-q8_0.gguf --local-dir ~/models/
+
+# Qwen2.5-Coder-7B Q4_K_M (for coding tasks — 4.7 GB)
 huggingface-cli download Qwen/Qwen2.5-Coder-7B-Instruct-GGUF \
-    qwen2.5-coder-7b-instruct-q4_k_m.gguf
-huggingface-cli download Qwen/Qwen2.5-Coder-7B-Instruct \
-    tokenizer.json
+    qwen2.5-coder-7b-instruct-q4_k_m.gguf --local-dir ~/models/
 
-# CLI generation with text I/O (Phase 6)
-cargo run --release -p bare-metal-engine --bin generate -- \
-    qwen2.5-coder-7b-instruct-q4_k_m.gguf \
-    --tokenizer tokenizer.json \
-    --prompt "Write a Rust function that computes Fibonacci numbers" \
-    --tokens 200 --temperature 0.7
+# Download tokenizer
+huggingface-cli download Qwen/Qwen2.5-0.5B-Instruct \
+    tokenizer.json --local-dir ~/models/
+```
 
-# OpenAI-compatible HTTP server (Phase 7)
-cargo run --release -p bare-metal-engine --bin serve -- \
-    qwen2.5-coder-7b-instruct-q4_k_m.gguf tokenizer.json \
-    --port 8080
+### Build & Run
+
+```bash
+# Build
+cargo build --release -p bare-metal-engine
+
+# Generate text
+./target/release/generate ~/models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    --tokenizer ~/models/tokenizer.json \
+    --prompt '<|im_start|>user
+What is 2+2?<|im_end|>
+<|im_start|>assistant
+' \
+    --tokens 100
+
+# Start OpenAI-compatible server
+./target/release/serve ~/models/qwen2.5-0.5b-instruct-q8_0.gguf \
+    ~/models/tokenizer.json --port 8080
 
 # Query the server
 curl http://localhost:8080/v1/chat/completions \
@@ -49,149 +121,239 @@ curl http://localhost:8080/v1/chat/completions \
   -d '{"messages":[{"role":"user","content":"Hello!"}],"max_tokens":64}'
 ```
 
-Requires: macOS 14+, Xcode 15+, Rust 1.78+.
+### CLI Options
+
+```
+generate <model.gguf> [OPTIONS]
+
+Options:
+  --tokenizer <path>      Path to tokenizer.json
+  --prompt <text>         Input prompt
+  --tokens N              Max tokens to generate (default: 30)
+  --temperature T         0.0 = greedy (default: 0.0)
+  --top-p P               Nucleus sampling (default: 0.9)
+  --top-k K               Top-K sampling (default: 50)
+  --rep-penalty F         Repetition penalty (default: 1.1)
+  --seed S                RNG seed (default: 42)
+  --tq                    Enable TurboQuant KV cache compression
+```
 
 ---
 
-## Repository Layout
+## 🏗️ Architecture
 
 ```
-Bare-Metal-MX-LLM/
+┌──────────────────────────────────────────────────────────────┐
+│                        RunIT Engine                          │
+│                                                              │
+│  ┌──────────┐   ┌──────────────┐   ┌──────────────────────┐ │
+│  │   GGUF   │──▶│   Executor   │──▶│   Metal GPU          │ │
+│  │  Parser  │   │              │   │                      │ │
+│  │  (mmap)  │   │  • Weights   │   │  • GEMV (f32)       │ │
+│  └──────────┘   │  • KV Cache  │   │  • RMSNorm          │ │
+│                 │  • Forward   │   │  • RoPE (non-inter.) │ │
+│  ┌──────────┐   │    Pass      │   │  • Attention         │ │
+│  │Tokenizer │──▶│              │   │  • SwiGLU            │ │
+│  │  (HF)    │   └──────┬───────┘   │  • Dequant (Q4K/Q8) │ │
+│  └──────────┘          │           └──────────────────────┘ │
+│                        ▼                                     │
+│              ┌─────────────────┐                             │
+│              │    Sampler      │                             │
+│              │  temp/top-k/p   │                             │
+│              │  rep penalty    │                             │
+│              └─────────────────┘                             │
+│                        │                                     │
+│              ┌─────────▼─────────┐                           │
+│              │   HTTP Server     │                           │
+│              │  OpenAI-compat.   │                           │
+│              │  SSE streaming    │                           │
+│              └───────────────────┘                           │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Crate Structure
+
+| Crate | Description |
+|-------|-------------|
+| `bare-metal-gguf` | GGUF parser — mmap, tensor metadata, zero-copy views |
+| `bare-metal-tokenizer` | HuggingFace tokenizer wrapper |
+| `bare-metal-kernels` | Metal shaders + Rust dispatch layer |
+| `bare-metal-engine` | Model config, forward pass, KV cache, server |
+
+### Metal GPU Kernels
+
+| Kernel | File | Description |
+|--------|------|-------------|
+| `gemv_f32_f32out` | `gemv.metal` | GEMV with Kahan summation + contiguous blocks |
+| `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV |
+| `rms_norm_f32_f32_f32g` | `norm.metal` | Full f32 RMSNorm |
+| `rope_inplace_f32` | `rope.metal` | Non-interleaved RoPE (Qwen2/LLaMA) |
+| `decode_attention_f32` | `attention.metal` | Single-query attention with online softmax |
+| `flash_attention_f16` | `attention.metal` | Tiled FlashAttention-2 for prefill |
+| `silu_mul_f32` | `activation.metal` | SwiGLU activation (fused) |
+| `dequant_q4k_f16` | `dequant.metal` | Q4\_K\_M GPU dequantization |
+| + 20 more | various | f16/f32 variants, bias add, argmax, etc. |
+
+---
+
+## 🔬 Precision Pipeline
+
+RunIT uses an **f32 precision pipeline** throughout the forward pass for research-grade accuracy:
+
+```
+Token Embedding (f32)
+    │
+    ▼
+RMSNorm (f32 in → f32 out, f32 gamma)
+    │
+    ▼
+Q/K/V Projections (f32 GEMV with Kahan summation)
+    │
+    ▼
+RoPE (f32, non-interleaved pairing)
+    │
+    ▼
+KV Cache (f32, flat layout)
+    │
+    ▼
+Decode Attention (f32 Q·K, f32 softmax, f32 output)
+    │
+    ▼
+FFN: gate/up → SiLU → down (all f32)
+    │
+    ▼
+lm_head (f32 → f32 logits)
+```
+
+---
+
+## 📦 Supported Models & Quantizations
+
+| Architecture | Status | Models Tested |
+|-------------|--------|---------------|
+| **Qwen2** | ✅ Full support | Qwen2.5-0.5B, Qwen2.5-Coder-7B |
+| **LLaMA** | ✅ Full support | LLaMA-2, LLaMA-3 |
+| **Mistral** | ✅ Full support | Mistral-7B |
+| **OLMoE** | ✅ MoE support | OLMoE-1B-7B |
+
+| Quantization | Status | Notes |
+|-------------|--------|-------|
+| **Q8\_0** | ✅ Best quality | Dequant to f32, precise |
+| **Q4\_K\_M** | ✅ Recommended | Fused GPU dequant, 3.5x less bandwidth |
+| **Q6\_K** | ✅ Supported | CPU dequant to f32 |
+| **Q5\_K** | ✅ Supported | CPU dequant to f32 |
+| **Q5\_0** | ✅ Supported | CPU dequant to f32 |
+| **Q4\_0** | ✅ Supported | CPU dequant to f32 |
+| **F16** | ✅ Native | Zero-copy or memcpy |
+| **BF16** | ✅ Converted | BF16 → f32 at load time |
+
+---
+
+## 📈 Development Roadmap
+
+| Phase | Feature | Status |
+|:-----:|---------|:------:|
+| 0 | GGUF parser (mmap, tensors, metadata) | ✅ Done |
+| 1 | Metal GPU kernels (GEMV, RoPE, RMSNorm, Attention) | ✅ Done |
+| 2 | Model loading + config | ✅ Done |
+| 3 | Transformer forward pass + KV cache | ✅ Done |
+| 4 | Q4\_K\_M GPU dequantization | ✅ Done |
+| 5 | TurboQuant KV-cache compression (3-4 bit) | ✅ Done |
+| 6 | Text I/O — tokenizer, sampling | ✅ Done |
+| 7 | OpenAI-compatible HTTP server | ✅ Done |
+| 8 | Prefill batching (GEMM kernel) | ✅ Done |
+| 9 | **f32 precision pipeline** | ✅ Done |
+| 10 | **RoPE fix + llama.cpp parity** | ✅ **Done** |
+| 11 | f32 prefill + batched prompt processing | 🔜 Next |
+| 12 | Performance optimization (NEON GEMV, fused kernels) | 📋 Planned |
+
+---
+
+## 🐛 Major Bug Fix: RoPE Dimension Pairing
+
+The engine had a critical bug where the **Rotary Position Embedding** used **interleaved** pairing `(0,1), (2,3)...` instead of the correct **non-interleaved** pairing `(i, i+d/2)` used by Qwen2/LLaMA/Mistral.
+
+**Why it was hidden:** At position 0, RoPE is the identity rotation (`cos(0)=1, sin(0)=0`) regardless of pairing — so single-token tests always passed. The bug only manifested at position ≥ 1, scrambling the positional encoding and corrupting multi-token attention.
+
+```
+Before (wrong):  pairs (0,1) (2,3) (4,5) ... → scrambled positions at pos≥1
+After (correct): pairs (0,32) (1,33) (2,34) ... → perfect llama.cpp match
+```
+
+> 📋 Full investigation: [docs/COMPARISON.md](docs/COMPARISON.md) · [docs/STATUS_REPORT.md](docs/STATUS_REPORT.md)
+
+---
+
+## 📂 Repository Layout
+
+```
+RunIT/
 ├── crates/
-│   ├── gguf/           # Phase 0 — GGUF file parser (mmap, tensors, metadata)
-│   ├── tokenizer/      # Phase 6 — HuggingFace tokenizer wrapper
-│   ├── kernels/        # Phase 1-8 — Metal shaders + Rust dispatch layer
-│   │   ├── shaders/    # .metal source files compiled to .metallib at build time
-│   │   │   ├── gemv.metal, rms_norm.metal, rope.metal
-│   │   │   ├── flash_attn.metal, silu_mul.metal, add.metal
-│   │   │   ├── dequant.metal          # Phase 4: Q4_K_M GPU dequant
-│   │   │   ├── turboquant.metal       # Phase 5: TurboQuant KV compression
-│   │   │   ├── gemm.metal             # Phase 8: tiled GEMM for prefill
-│   │   │   └── rope.metal             # Phase 8: batched RoPE appended
-│   │   └── src/        # MetalContext, dispatch functions, error types
-│   └── engine/         # Phase 2-8 — model config, forward pass, server
+│   ├── gguf/           # GGUF file parser (mmap, zero-copy)
+│   ├── tokenizer/      # HuggingFace tokenizer wrapper
+│   ├── kernels/        # Metal shaders + Rust dispatch
+│   │   ├── shaders/    # .metal source → .metallib at build time
+│   │   │   ├── gemv.metal          # 12 GEMV kernel variants
+│   │   │   ├── gemv_q4k.metal      # Fused Q4K GEMV (6 variants)
+│   │   │   ├── attention.metal     # FlashAttention-2 + decode attention
+│   │   │   ├── rope.metal          # RoPE (non-interleaved, f16/f32/batch)
+│   │   │   ├── norm.metal          # RMSNorm (4 variants)
+│   │   │   ├── activation.metal    # SwiGLU, add, argmax, KV scatter
+│   │   │   ├── dequant.metal       # Q4K GPU dequantization
+│   │   │   ├── gemm.metal          # Tiled GEMM for prefill
+│   │   │   └── turboquant.metal    # TurboQuant KV compression
+│   │   └── src/        # MetalContext, dispatch, error types
+│   └── engine/         # Model loader, forward pass, server
 │       └── src/
-│           ├── config.rs        # ModelConfig from GGUF metadata
-│           ├── tensor.rs        # DType enum, Tensor descriptor
-│           ├── loader.rs        # Model struct (mmap + tensor index)
-│           ├── kv_cache.rs      # Flat KV cache in unified Metal buffers
-│           ├── tq_kv_cache.rs   # Phase 5: TurboQuant hybrid KV cache
-│           ├── forward.rs       # Executor: weight upload + transformer forward
-│           ├── prefill.rs       # Phase 8: batched prefill via GEMM
-│           ├── sampler.rs       # Phase 6: temperature / top-k / top-p sampling
-│           ├── chat_template.rs # Phase 6: Qwen2 chat template formatter
-│           ├── server/          # Phase 7: OpenAI-compatible HTTP server
-│           │   ├── mod.rs       #   AppState + axum router
-│           │   ├── types.rs     #   Request / response serde types
-│           │   └── handlers.rs  #   Route handler implementations
+│           ├── forward.rs       # Executor + 8 quantization decoders
+│           ├── kv_cache.rs      # f32 flat KV cache
+│           ├── sampler.rs       # temp/top-k/top-p/rep-penalty
+│           ├── server/          # OpenAI-compatible HTTP (axum, SSE)
 │           └── bin/
-│               ├── generate.rs  # CLI: text I/O + benchmark
-│               ├── serve.rs     # HTTP server binary
-│               └── inspect.rs   # Model inspection utility
+│               ├── generate.rs  # CLI text generation + benchmark
+│               └── serve.rs     # HTTP server binary
 ├── docs/
-│   ├── ARCHITECTURE.md   # System design and data-flow
-│   └── KERNELS.md        # Metal kernel reference
+│   ├── assets/          # Logo, charts, diagrams
+│   ├── ARCHITECTURE.md  # System design and data-flow
+│   ├── COMPARISON.md    # llama.cpp comparison + test results
+│   ├── KERNELS.md       # Metal kernel reference
+│   └── STATUS_REPORT.md # Bug fixes + precision improvements
 └── README.md
 ```
 
 ---
 
-## Architecture Overview
-
-```
-GGUF file (mmap)
-      │
-      ▼
-  bare-metal-gguf   ←── zero-copy tensor views
-      │
-      ▼
-  bare-metal-engine
-  ┌───────────────────────────────────┐
-  │  Executor::new()                  │
-  │  ┌──────────────────────────────┐ │
-  │  │  upload_weight()             │ │
-  │  │  F16 → zero-copy / memcpy   │ │
-  │  │  Q4K → GPU dequant → F16    │ │   ← Phase 4
-  │  └──────────────────────────────┘ │
-  │                                   │
-  │  Executor::forward(token, pos, kv)│
-  │  per token:                       │
-  │   embed → [RMSNorm → QKV → RoPE  │
-  │    → KV-cache update             │
-  │    → FlashAttention              │
-  │    → FFN (SwiGLU)] × N layers    │
-  │   → final norm → lm_head → logits│
-  └───────────────────────────────────┘
-           │
-  KvCache  │  Metal buffers, unified memory
-  (caller) │  [num_layers, num_kv_heads, max_seq, head_dim] f16
-```
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full details.
-
----
-
-## Phase Roadmap
-
-| Phase | Branch | Description |
-|-------|--------|-------------|
-| 0 | `phase-0/gguf-parser` | GGUF parser — mmap + tensor metadata |
-| 1 | `phase-1/metal-kernels` | Core Metal kernels (GEMV, RoPE, RMSNorm, SwiGLU, FlashAttn) |
-| 2 | `phase-2/model-loading` | ModelConfig, DType, tensor loader, MetalTensor |
-| 3 | `phase-3/transformer-forward` | Transformer forward pass + KV cache |
-| 4 | `phase-4/q4k-dequant` | Q4\_K\_M GPU dequantisation |
-| 5 | `phase-5/turboquant-kv-cache` | TurboQuant KV-cache compression (3–4 bit, ICLR 2026) |
-| 6 | `phase-6-7-8/completion` | Text I/O: HuggingFace tokenizer, temperature/top-p/top-k |
-| 7 | `phase-6-7-8/completion` | OpenAI-compatible HTTP server (axum, SSE streaming) |
-| 8 | `phase-6-7-8/completion` | Prefill batching — tiled GEMM + batched RoPE |
-
----
-
-## TurboQuant (Phase 5 Preview)
-
-[TurboQuant](https://arxiv.org/abs/2504.19874) (Google Research / ICLR 2026) compresses the
-**KV cache** to 3–4 bits per element with provably near-optimal inner-product fidelity —
-no retraining required. Unlike Q4\_K\_M (which quantises model *weights*), TurboQuant
-targets the *KV activations* that grow with sequence length.
-
-**How it works:**
-
-1. Apply a randomised Hadamard rotation to each K/V vector → coordinates become
-   near-Gaussian, amenable to Lloyd-Max quantisation.
-2. Quantise each rotated coordinate to 3 or 4 bits using per-bitwidth codebooks.
-3. Optionally correct inner-product bias with a 1-bit JL residual sketch.
-
-**Impact on this engine:**
-
-- KV cache memory: 234 MB (F16, 4096 tokens) → ~48 MB at 3 bit (~4.9×).
-- Enables much longer context windows within 24 GB VRAM.
-- Metal implementation is feasible: Hadamard transform via SIMD butterfly ops,
-  codebook lookup in threadgroup memory.
-
-See [docs/ARCHITECTURE.md#turboquant](docs/ARCHITECTURE.md#phase-5-turboquant-kv-cache-compression) for the planned design.
-
----
-
-## Development
+## 🔧 Development
 
 ```bash
-# Check all crates (Linux-safe)
+# Check all crates
 cargo check --workspace
-
-# Check Metal-specific code (requires macOS SDK)
-cargo check --target aarch64-apple-darwin -p bare-metal-engine -p bare-metal-kernels
 
 # Run tests
 cargo test --workspace
 
 # Build release
 cargo build --release -p bare-metal-engine
-```
 
-CI runs on `macos-latest` (GitHub Actions).
+# Debug: per-position logits during prompt processing
+DEBUG_LOGITS=1 ./target/release/generate <model.gguf> \
+    --tokenizer <tokenizer.json> --tokens 10 \
+    --prompt '<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n'
+
+# Debug: per-layer hidden state dump
+DEBUG_LAYERS=1 ./target/release/generate <model.gguf> \
+    --tokenizer <tokenizer.json> --tokens 1 --prompt 'Hello'
+```
 
 ---
 
-## License
+## 📄 License
 
 MIT
+
+---
+
+<p align="center">
+  <strong>Built with 🦀 Rust and ⚡ Metal</strong><br/>
+  <em>For Apple Silicon, from the ground up</em>
+</p>

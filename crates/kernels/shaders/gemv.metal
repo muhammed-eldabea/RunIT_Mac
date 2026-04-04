@@ -2,25 +2,40 @@
 using namespace metal;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// GEMV: y = A * x   (F16 matrix-vector multiply)
-//
-// Used in the decode path (batch_size = 1) where only one token is processed.
-// Memory-bandwidth bound: ~2 bytes read per multiply-accumulate.
+// GEMV: y = A * x   (matrix-vector multiply for decode path)
 //
 // Each threadgroup computes one output element y[row].
-// Threads split the K reduction dimension and combine with simd_sum().
+// Threads split the K reduction dimension using CONTIGUOUS blocks
+// (not strided), matching llama.cpp's sequential accumulation order.
+//
+// Reduction uses Kahan-compensated sequential sum in threadgroup memory
+// instead of simd_sum() to eliminate hardware-dependent reduction order.
 //
 // Grid  : [M, 1, 1]   — one threadgroup per output element
-// Group : [32, 1, 1]  — one SIMD lane width
-//
-// A layout: [M, K] row-major
-// x layout: [K]
-// y layout: [M]
+// Group : [32, 1, 1]   — one SIMD lane width
+// ──────────────────────────────���──────────────────────────────────────────────
+
+// Sequential Kahan reduction of 32 partial sums in threadgroup memory.
+// Only thread 0 executes this; result is returned to thread 0.
+inline float kahan_reduce_tg(threadgroup float* tg, uint lsize) {
+    float sum = tg[0];
+    float c = 0.0f;
+    for (uint i = 1; i < lsize; i++) {
+        float val = tg[i] - c;
+        float t = sum + val;
+        c = (t - sum) - val;
+        sum = t;
+    }
+    return sum;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
+// F16 GEMV
+// ─────��─────────────────────────────────────────────────────────────────��─────
 kernel void gemv_f16(
-    device const half* A     [[buffer(0)]],  // weight matrix [M, K]
-    device const half* x_vec [[buffer(1)]],  // input vector  [K]
-    device       half* y     [[buffer(2)]],  // output vector [M]
+    device const half* A     [[buffer(0)]],
+    device const half* x_vec [[buffer(1)]],
+    device       half* y     [[buffer(2)]],
     constant     uint& M     [[buffer(3)]],
     constant     uint& K     [[buffer(4)]],
     uint row  [[threadgroup_position_in_grid]],
@@ -28,54 +43,37 @@ kernel void gemv_f16(
     uint lsize[[threads_per_threadgroup]])
 {
     if (row >= M) return;
-
     device const half* A_row = A + row * K;
 
-    // Each thread accumulates its slice of the dot product
+    // Contiguous block per thread
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-
-    // Vectorised: load 4 halfs at a time where possible
-    uint k4 = K / 4;
-    uint k4_rem = K % 4;
-
-    for (uint i = lid; i < k4; i += lsize) {
-        half4 av = ((device const half4*)A_row)[i];
-        half4 xv = ((device const half4*)x_vec)[i];
-        acc += float(av.x) * float(xv.x)
-             + float(av.y) * float(xv.y)
-             + float(av.z) * float(xv.z)
-             + float(av.w) * float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = float(A_row[i]) * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
 
-    // Handle tail elements
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize) {
-        acc += float(A_row[i]) * float(x_vec[i]);
-    }
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // SIMD reduction across the 32-lane warp
-    acc = simd_sum(acc);
-
-    // Lane 0 writes the result
     if (lid == 0) {
-        y[row] = half(acc);
+        y[row] = half(kahan_reduce_tg(tg, lsize));
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Fused GEMV + residual add: y[i] = (A * x)[i] + residual[i]
-//
-// Saves one kernel dispatch + one full buffer read/write per residual
-// connection. Used for attention output projection and FFN down projection.
-//
-// Grid  : [M, 1, 1]   — one threadgroup per output element
-// Group : [32, 1, 1]   — one SIMD lane width
-// ─────────────────────────────────────────────────────────────────────────────
+// Fused GEMV + residual: y[i] = (A * x)[i] + residual[i]
 kernel void gemv_add_f16(
-    device const half* A        [[buffer(0)]],  // weight matrix [M, K]
-    device const half* x_vec    [[buffer(1)]],  // input vector  [K]
-    device       half* y        [[buffer(2)]],  // output vector [M] — also accumulates residual
-    device const half* residual [[buffer(3)]],  // residual [M] — added to GEMV result
+    device const half* A        [[buffer(0)]],
+    device const half* x_vec    [[buffer(1)]],
+    device       half* y        [[buffer(2)]],
+    device const half* residual [[buffer(3)]],
     constant     uint& M        [[buffer(4)]],
     constant     uint& K        [[buffer(5)]],
     uint row  [[threadgroup_position_in_grid]],
@@ -83,34 +81,35 @@ kernel void gemv_add_f16(
     uint lsize[[threads_per_threadgroup]])
 {
     if (row >= M) return;
-
     device const half* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        half4 av = ((device const half4*)A_row)[i];
-        half4 xv = ((device const half4*)x_vec)[i];
-        acc += float(av.x) * float(xv.x)
-             + float(av.y) * float(xv.y)
-             + float(av.z) * float(xv.z)
-             + float(av.w) * float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = float(A_row[i]) * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
 
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize) {
-        acc += float(A_row[i]) * float(x_vec[i]);
-    }
-
-    acc = simd_sum(acc);
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (lid == 0) {
-        y[row] = half(acc + float(residual[row]));
+        y[row] = half(kahan_reduce_tg(tg, lsize) + float(residual[row]));
     }
 }
 
-// Full f32 GEMV with f32 output: y_f32 = A_f32 * x_f32
-// Uses Kahan compensated summation to reduce accumulation error from O(N*eps) to O(eps).
+// ───────────────────────────────���──────────────────────────────��──────────────
+// F32-F32 GEMV (dequanted weights, max precision)
+// ──────────────────────────��─────────────────────��────────────────────────────
+
+// y_f32 = A_f32 * x_f32
 kernel void gemv_f32_f32out(
     device const float* A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -123,19 +122,28 @@ kernel void gemv_f32_f32out(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
     float comp = 0.0f;
-    for (uint i = lid; i < K; i += lsize) {
+    for (uint i = start; i < end; i++) {
         float prod = A_row[i] * x_vec[i] - comp;
         float t = acc + prod;
         comp = (t - acc) - prod;
         acc = t;
     }
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc;
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize);
 }
 
-// Full f32 GEMV: y = A_f32 * x_f32 (maximum precision for dequanted weights)
+// y_f16 = A_f32 * x_f32
 kernel void gemv_f32(
     device const float* A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -148,20 +156,28 @@ kernel void gemv_f32(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        float4 xv = ((device const float4*)x_vec)[i];
-        acc += av.x*xv.x + av.y*xv.y + av.z*xv.z + av.w*xv.w;
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    for (uint i = k4*4 + lid; i < K; i += lsize)
-        acc += A_row[i] * x_vec[i];
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = half(acc);
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = half(kahan_reduce_tg(tg, lsize));
 }
 
-// Full f32 GEMV + f32 residual: y_f32 = A_f32 * x_f32 + residual_f32
+// y_f32 = A_f32 * x_f32 + residual_f32
 kernel void gemv_add_f32(
     device const float* A        [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -175,20 +191,32 @@ kernel void gemv_add_f32(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        float4 xv = ((device const float4*)x_vec)[i];
-        acc += av.x*xv.x + av.y*xv.y + av.z*xv.z + av.w*xv.w;
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    for (uint i = k4*4 + lid; i < K; i += lsize)
-        acc += A_row[i] * x_vec[i];
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc + residual[row];
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize) + residual[row];
 }
 
-// GEMV with f32 input: y = A_f16 * x_f32
+// ��──────────────────────────���─────────────────────────────────────────────────
+// F16-weight, F32-input GEMV variants
+// ──────���──────────────────────��───────────────────────────────────────────────
+
+// y_f16 = A_f16 * x_f32
 kernel void gemv_f16w_f32in(
     device const half*  A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -201,14 +229,28 @@ kernel void gemv_f16w_f32in(
 {
     if (row >= M) return;
     device const half* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    for (uint i = lid; i < K; i += lsize)
-        acc += float(A_row[i]) * x_vec[i];
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = half(acc);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = float(A_row[i]) * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
+    }
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = half(kahan_reduce_tg(tg, lsize));
 }
 
-// GEMV + f32 residual: y_f32[i] = (A_f16 * x_f16)[i] + residual_f32[i]
+// y_f32 = (A_f16 * x_f16) + residual_f32
 kernel void gemv_add_f32res_f16(
     device const half*  A        [[buffer(0)]],
     device const half*  x_vec    [[buffer(1)]],
@@ -222,23 +264,28 @@ kernel void gemv_add_f32res_f16(
 {
     if (row >= M) return;
     device const half* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        half4 av = ((device const half4*)A_row)[i];
-        half4 xv = ((device const half4*)x_vec)[i];
-        acc += float(av.x)*float(xv.x) + float(av.y)*float(xv.y)
-             + float(av.z)*float(xv.z) + float(av.w)*float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = float(A_row[i]) * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += float(A_row[i]) * float(x_vec[i]);
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc + residual[row];
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize) + residual[row];
 }
 
-// GEMV + f32 residual with f32 input: y_f32[i] = (A_f16 * x_f32)[i] + res_f32[i]
-// Uses Kahan compensated summation for precision.
+// y_f32 = (A_f16 * x_f32) + residual_f32
 kernel void gemv_add_f32_f16w(
     device const half*  A        [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -252,20 +299,28 @@ kernel void gemv_add_f32_f16w(
 {
     if (row >= M) return;
     device const half* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
     float comp = 0.0f;
-    for (uint i = lid; i < K; i += lsize) {
+    for (uint i = start; i < end; i++) {
         float prod = float(A_row[i]) * x_vec[i] - comp;
         float t = acc + prod;
         comp = (t - acc) - prod;
         acc = t;
     }
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc + residual[row];
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize) + residual[row];
 }
 
-// GEMV with f16 weights, f32 input, f32 output: y_f32 = A_f16 * x_f32
-// Uses Kahan compensated summation for precision.
+// y_f32 = A_f16 * x_f32  (full f32 output)
 kernel void gemv_f16w_f32in_f32out(
     device const half*  A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -278,28 +333,32 @@ kernel void gemv_f16w_f32in_f32out(
 {
     if (row >= M) return;
     device const half* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
     float comp = 0.0f;
-    for (uint i = lid; i < K; i += lsize) {
+    for (uint i = start; i < end; i++) {
         float prod = float(A_row[i]) * x_vec[i] - comp;
         float t = acc + prod;
         comp = (t - acc) - prod;
         acc = t;
     }
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc;
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize);
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════���═════════════════════════════════════��═══════════════════════════════
 // F32-WEIGHT GEMV VARIANTS
-//
-// These kernels read weights as float (f32) instead of half (f16).
-// Used when quantized weights (Q5_0, Q6K, Q8_0, etc.) are dequantized to
-// f32 on the CPU to preserve precision. llama.cpp dequantizes to f32;
-// truncating to f16 loses ~10 mantissa bits which compounds across layers.
-// ═════════════════════════════════════════════════════════════════════════════
+// ═══════════════════���═════════════════════════════════════════════════════════
 
-// GEMV with f32 weights: y_f16 = A_f32 * x_f16
+// y_f16 = A_f32 * x_f16
 kernel void gemv_f32w(
     device const float* A     [[buffer(0)]],
     device const half*  x_vec [[buffer(1)]],
@@ -312,22 +371,28 @@ kernel void gemv_f32w(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        half4  xv = ((device const half4*)x_vec)[i];
-        acc += av.x * float(xv.x) + av.y * float(xv.y)
-             + av.z * float(xv.z) + av.w * float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += A_row[i] * float(x_vec[i]);
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = half(acc);
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = half(kahan_reduce_tg(tg, lsize));
 }
 
-// Fused GEMV + residual with f32 weights: y_f16 = A_f32 * x_f16 + residual_f16
+// y_f16 = A_f32 * x_f16 + residual_f16
 kernel void gemv_add_f32w(
     device const float* A        [[buffer(0)]],
     device const half*  x_vec    [[buffer(1)]],
@@ -341,22 +406,28 @@ kernel void gemv_add_f32w(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        half4  xv = ((device const half4*)x_vec)[i];
-        acc += av.x * float(xv.x) + av.y * float(xv.y)
-             + av.z * float(xv.z) + av.w * float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += A_row[i] * float(x_vec[i]);
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = half(acc + float(residual[row]));
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = half(kahan_reduce_tg(tg, lsize) + float(residual[row]));
 }
 
-// GEMV with f32 weights and f32 input: y_f16 = A_f32 * x_f32
+// y_f16 = A_f32 * x_f32
 kernel void gemv_f32w_f32in(
     device const float* A     [[buffer(0)]],
     device const float* x_vec [[buffer(1)]],
@@ -369,21 +440,28 @@ kernel void gemv_f32w_f32in(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        float4 xv = ((device const float4*)x_vec)[i];
-        acc += av.x * xv.x + av.y * xv.y + av.z * xv.z + av.w * xv.w;
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * x_vec[i] - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += A_row[i] * x_vec[i];
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = half(acc);
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = half(kahan_reduce_tg(tg, lsize));
 }
 
-// GEMV + f32 residual with f32 weights: y_f32 = A_f32 * x_f16 + residual_f32
+// y_f32 = A_f32 * x_f16 + residual_f32
 kernel void gemv_add_f32res_f32w(
     device const float* A        [[buffer(0)]],
     device const half*  x_vec    [[buffer(1)]],
@@ -397,23 +475,28 @@ kernel void gemv_add_f32res_f32w(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
-    uint k4 = K / 4;
-    for (uint i = lid; i < k4; i += lsize) {
-        float4 av = ((device const float4*)A_row)[i];
-        half4  xv = ((device const half4*)x_vec)[i];
-        acc += av.x * float(xv.x) + av.y * float(xv.y)
-             + av.z * float(xv.z) + av.w * float(xv.w);
+    float comp = 0.0f;
+    for (uint i = start; i < end; i++) {
+        float prod = A_row[i] * float(x_vec[i]) - comp;
+        float t = acc + prod;
+        comp = (t - acc) - prod;
+        acc = t;
     }
-    uint tail_start = k4 * 4;
-    for (uint i = tail_start + lid; i < K; i += lsize)
-        acc += A_row[i] * float(x_vec[i]);
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc + residual[row];
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize) + residual[row];
 }
 
-// GEMV + f32 residual with f32 weights and f32 input: y_f32 = A_f32 * x_f32 + res_f32
-// Uses Kahan compensated summation for precision.
+// y_f32 = A_f32 * x_f32 + residual_f32
 kernel void gemv_add_f32_f32w(
     device const float* A        [[buffer(0)]],
     device const float* x_vec    [[buffer(1)]],
@@ -427,14 +510,23 @@ kernel void gemv_add_f32_f32w(
 {
     if (row >= M) return;
     device const float* A_row = A + row * K;
+
+    uint block = K / lsize;
+    uint start = lid * block;
+    uint end   = (lid == lsize - 1) ? K : start + block;
+
     float acc = 0.0f;
     float comp = 0.0f;
-    for (uint i = lid; i < K; i += lsize) {
+    for (uint i = start; i < end; i++) {
         float prod = A_row[i] * x_vec[i] - comp;
         float t = acc + prod;
         comp = (t - acc) - prod;
         acc = t;
     }
-    acc = simd_sum(acc);
-    if (lid == 0) y[row] = acc + residual[row];
+
+    threadgroup float tg[32];
+    tg[lid] = acc;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (lid == 0) y[row] = kahan_reduce_tg(tg, lsize) + residual[row];
 }
