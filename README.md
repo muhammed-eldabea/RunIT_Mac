@@ -25,7 +25,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  🎯 100% token-match with llama.cpp on Qwen2.5-0.5B Q8_0      │
-│  ⚡ 258 tok/sec decode — exceeds llama.cpp by 12% (3.5× speedup) │
+│  ⚡ 233 tok/sec decode (Q8_0) — matches llama.cpp, 3.2× speedup │
 │  🦀 Pure Rust — zero Python runtime                            │
 │  🔧 15 Metal shaders, 85+ GPU kernels, fused Q4/Q8 dequant    │
 │  📦 GGUF native — loads any GGUF quantized model               │
@@ -63,18 +63,19 @@ Every test produces **identical output** to llama.cpp (greedy, temp=0):
   <img src="docs/assets/speedup-chart.svg" alt="Per-prompt decode speed" width="700"/>
 </p>
 
-### 🏆 3.5× Speedup: 73 → 258 tok/sec (exceeds llama.cpp by 12%)
+### 🚀 3.2× Speedup: 73 → 233 tok/sec (matches llama.cpp)
 
-| Metric | v0.0.1 | v0.2.0 | v0.3.0 | v0.7.0 | llama.cpp |
-|--------|:------:|:------:|:------:|:------:|:---------:|
-| **Decode tok/sec** | 73 | 161 | 224 | **258** 🏆 | 230 |
-| **Avg latency** | 13.94 ms | 6.28 ms | 4.73 ms | **3.87 ms** | ~4.35 ms |
-| **Quantization** | Q8_0 | Q8_0 | Q8_0 | Q4_0 | Q8_0 |
-| **Bytes/element** | 4.0 (f32) | 2.0 (f16) | 1.06 | **0.56** | — |
-| **Output quality** | ✅ | ✅ | ✅ | ✅* | ✅ |
+| Metric | v0.0.1 | v0.2.0 | v0.3.0 | v0.7.0 (Q8\_0) | llama.cpp |
+|--------|:------:|:------:|:------:|:--------------:|:---------:|
+| **Decode tok/sec** | 73 | 161 | 224 | **233** ✅ | 230 |
+| **Avg latency** | 13.94 ms | 6.28 ms | 4.73 ms | **4.29 ms** | ~4.35 ms |
+| **Quantization** | Q8\_0 | Q8\_0 | Q8\_0 | Q8\_0 | Q8\_0 |
+| **Output quality** | ✅ Perfect | ✅ Perfect | ✅ Perfect | ✅ **Perfect** | ✅ |
 
-> \* Q4\_0 output quality depends on model size. Q8\_0 at **233 tok/sec** has perfect output.
-> Measured on Apple M4 Pro · Qwen2.5-0.5B · greedy decode · 50 tokens
+> Measured on Apple M4 Pro · Qwen2.5-0.5B Q8\_0 · greedy decode · 50 tokens
+>
+> The engine also supports **Q4\_0 fused GEMV** (258 tok/sec) for larger models (3B+)
+> where 4-bit quantization produces good output. On 0.5B, Q4\_0 loses too much precision.
 
 ### Optimization Journey
 
@@ -84,14 +85,14 @@ Every test produces **identical output** to llama.cpp (greedy, temp=0):
 | v0.2.0 | simd_sum + half4 + f16 dequant | 161 | 2.2× | Hardware SIMD reduction |
 | v0.3.0 | Fused Q8\_0 GEMV | 224 | 3.1× | On-the-fly dequant (1.06 B/elem) |
 | v0.6.0 | Kernel fusion (QKV+bias, FFN, RoPE) | 228 | 3.1× | 242 dispatches (was 387) |
-| **v0.7.0** | **Fused Q4\_0 GEMV** | **258** | **3.5×** | **0.56 B/elem — ultimate bandwidth** |
+| **v0.7.0** | **+ Fused Q4\_0 GEMV** | **233 (Q8)** | **3.2×** | **Q4\_0 ready for larger models** |
 
 ### What Makes It Fast
 
 | Optimization | Impact | Files |
 |-------------|--------|-------|
-| **Fused Q4\_0 GEMV** | 0.56 bytes/elem — 72% less BW than f16 | `gemv_q4_0.metal` |
-| **Fused Q8\_0 GEMV** | 1.06 bytes/elem — 47% less BW than f16 | `gemv_q8_0.metal` |
+| **Fused Q8\_0 GEMV** | 1.06 bytes/elem — 47% less BW than f16 (primary path) | `gemv_q8_0.metal` |
+| **Fused Q4\_0 GEMV** | 0.56 bytes/elem — for larger models (3B+) at Q4\_0 | `gemv_q4_0.metal` |
 | **Fused QKV+bias** | 6 dispatches → 1 per layer (Qwen path) | `fused_qkv.metal` |
 | **Fused gate+up+silu** | 3 dispatches → 1 per layer | `fused_ffn.metal` |
 | **simd_sum() reduction** | 1-cycle hardware sum replaces 124-step Kahan | all GEMV shaders |
@@ -190,8 +191,8 @@ Options:
 
 | Kernel | File | Description |
 |--------|------|-------------|
-| `gemv_q4_0_f32in_f32out` | `gemv_q4_0.metal` | **Fused Q4\_0 GEMV** — 72% less BW than f16 🏆 |
-| `gemv_q8_0_f32in_f32out` | `gemv_q8_0.metal` | Fused Q8\_0 GEMV — 47% less bandwidth |
+| `gemv_q8_0_f32in_f32out` | `gemv_q8_0.metal` | **Fused Q8\_0 GEMV** — 47% less bandwidth (primary) |
+| `gemv_q4_0_f32in_f32out` | `gemv_q4_0.metal` | Fused Q4\_0 GEMV — for larger models at 4-bit |
 | `gemv_f16w_f32in_f32out` | `gemv.metal` | GEMV with simd_sum + vectorized half4 loads |
 | `gemv_q4k_f16` | `gemv_q4k.metal` | Fused Q4\_K dequant + GEMV |
 | `decode_attention_f32` | `attention.metal` | Decode attention with online softmax |
@@ -280,7 +281,7 @@ lm_head (f16 weights × f32 input → f32 logits)
 | 11 | **GEMV optimization** (simd_sum, vectorize, f16 dequant) | ✅ **Done — 2.2×** |
 | 12 | **Fused Q8\_0 GEMV** (on-the-fly dequant, 47% less BW) | ✅ **Done — 3.1×** |
 | 13 | **Kernel fusion** (QKV+bias, FFN, RoPE) + multi-row | ✅ **Done** |
-| 14 | **Fused Q4\_0 GEMV** (0.56 B/elem, 72% less BW) | ✅ **Done — 3.5×** 🏆 |
+| 14 | **Fused Q4\_0 GEMV** (for larger models at 4-bit) | ✅ **Done** |
 | 15 | **Profiling + speculative decoding infra** | ✅ **Done** |
 | 16 | PagedAttention KV cache + continuous batching | 🔜 Next |
 
