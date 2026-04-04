@@ -152,6 +152,17 @@ kernel void add_f16(
     out[gid] = a[gid] + b[gid];
 }
 
+// Add f16 source into f32 accumulator: acc[i] += src[i]
+kernel void add_f16_into_f32(
+    device const half*  src [[buffer(0)]],
+    device       float* acc [[buffer(1)]],
+    constant     uint&  N   [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    if (gid >= N) return;
+    acc[gid] += float(src[gid]);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Elementwise multiply
 //

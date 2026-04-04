@@ -1,4 +1,4 @@
 cargo:rerun-if-env-changed=METALLIB_PATH
 cargo:rerun-if-changed=shaders/
-cargo:warning=Metal shader compilation failed (exit 1) for shaders/dequant.metal
-cargo:warning=  error: error: cannot execute tool 'metal' due to missing Metal Toolchain; use: xcodebuild -downloadComponent MetalToolchain
+cargo:rustc-env=METALLIB_PATH=/Users/mohamedeldabaa/RunIT_MacOS/target/debug/build/bare-metal-kernels-98876afe01bcf148/out/kernels.metallib
+cargo:warning=Compiled 9 Metal shader(s) → /Users/mohamedeldabaa/RunIT_MacOS/target/debug/build/bare-metal-kernels-98876afe01bcf148/out/kernels.metallib

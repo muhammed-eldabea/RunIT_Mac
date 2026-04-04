@@ -66,8 +66,9 @@ kernel void flash_attention_f16(
     threadgroup half* S      = sram + (BLOCK_Q + 2*BLOCK_K) * HEAD_DIM_MAX;
 
     // Load Q row for this thread (stride = HEAD_DIM_MAX, use only [0..head_dim))
+    // Q layout from GEMM: [batch, q_len, num_heads, head_dim]  (positions outer, heads inner)
     bool q_valid = q_row < q_len;
-    uint q_base  = ((batch * num_heads + q_head) * q_len + q_row) * head_dim;
+    uint q_base  = ((batch * q_len + q_row) * num_heads + q_head) * head_dim;
     for (uint d = 0; d < head_dim; d++) {
         Q_tile[lid * HEAD_DIM_MAX + d] = q_valid ? Q[q_base + d] : half(0.0f);
     }
@@ -95,7 +96,7 @@ kernel void flash_attention_f16(
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
-        // Compute S = Q_row · K_tile^T * scale
+        // Compute S = Q_row · K_tile^T * scale (with causal mask)
         for (uint kv = 0; kv < BLOCK_K; kv++) {
             float score = 0.0f;
             for (uint d = 0; d < head_dim; d++) {
@@ -103,7 +104,9 @@ kernel void flash_attention_f16(
                        * float(K_tile[kv  * HEAD_DIM_MAX + d]);
             }
             bool kv_valid = (kv_start + kv) < kv_len;
-            S[lid * BLOCK_K + kv] = half(kv_valid ? score * scale : -INFINITY);
+            // Causal mask: each query position can only attend to positions <= its own
+            bool causal_ok = (kv_start + kv) <= q_row;
+            S[lid * BLOCK_K + kv] = half((kv_valid && causal_ok) ? score * scale : -INFINITY);
         }
 
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -147,7 +150,8 @@ kernel void flash_attention_f16(
 
     if (!q_valid) return;
 
-    uint o_base = ((batch * num_heads + q_head) * q_len + q_row) * head_dim;
+    // O layout matches Q: [batch, q_len, num_heads, head_dim]
+    uint o_base = ((batch * q_len + q_row) * num_heads + q_head) * head_dim;
     for (uint d = 0; d < head_dim; d++) {
         O[o_base + d] = half(O_reg[d] / l_i);
     }

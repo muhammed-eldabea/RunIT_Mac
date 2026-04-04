@@ -239,10 +239,17 @@ fn run_loop_std(
 ) -> anyhow::Result<()> {
     use bare_metal_engine::sampler::{sample, greedy_argmax};
 
-    // Prefill if prompt has more than 1 token
+    // Process prompt token-by-token (no prefill — f32 decode path for precision)
     let (start_pos, mut next_token) = if prompt_ids.len() > 1 {
         let t0 = std::time::Instant::now();
-        let logits = executor.prefill(prompt_ids, kv)?;
+        // Feed each prompt token through the decode path to populate KV cache
+        for (i, &tid) in prompt_ids[..prompt_ids.len()-1].iter().enumerate() {
+            executor.forward_greedy(tid, i as u32, kv)?;
+        }
+        // Get logits from last prompt token
+        let last = *prompt_ids.last().unwrap();
+        let pos = (prompt_ids.len() - 1) as u32;
+        let logits = executor.forward(last, pos, kv)?;
         let elapsed = t0.elapsed();
         if warmup_steps == 0 { step_times.push(elapsed); }
 

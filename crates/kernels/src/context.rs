@@ -39,6 +39,26 @@ pub const KERNEL_NAMES: &[&str] = &[
     "decode_attention_f16",
     // dequant.metal
     "dequant_q4k_f16",
+    // norm.metal (f32 variants)
+    "rms_norm_f32in_f16out",
+    "rms_norm_f32_f32",
+    // activation.metal (f32 residual)
+    "add_f16_into_f32",
+    // gemv.metal (f32 variants)
+    "gemv_f32_f32out",
+    "gemv_f32",
+    "gemv_add_f32",
+    "gemv_f16w_f32in",
+    "gemv_add_f32res_f16",
+    "gemv_add_f32_f16w",
+    // gemv_q4k.metal (f32 residual)
+    "gemv_q4k_add_f32res_f16",
+    // gemv.metal (f32 weight variants)
+    "gemv_f32w",
+    "gemv_add_f32w",
+    "gemv_f32w_f32in",
+    "gemv_add_f32res_f32w",
+    "gemv_add_f32_f32w",
     // gemm.metal
     "gemm_f16",
     // rope.metal (batch)

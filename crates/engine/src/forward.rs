@@ -10,9 +10,13 @@ use crate::tensor::DType;
 use bare_metal_kernels::{
     context::MetalContext,
     dispatch::{
-        add_f16, argmax_f16, decode_attention_f16, dequant_q4k_f16,
-        flash_attention_f16, gemv_f16, gemv_add_f16, gemv_q4k_f16, gemv_q4k_add_f16,
-        kv_copy_to_cache_f16, mul_f16, rms_norm_f16,
+        add_f16, add_f16_into_f32, argmax_f16, decode_attention_f16, dequant_q4k_f16,
+        flash_attention_f16, gemv_f16, gemv_add_f16, gemv_add_f32res_f16,
+        gemv_f16w_f32in, gemv_add_f32_f16w,
+        gemv_q4k_f16, gemv_q4k_add_f16, gemv_q4k_add_f32res_f16,
+        gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
+        kv_copy_to_cache_f16, mul_f16, rms_norm_f16, rms_norm_f32in_f16out,
+        rms_norm_f32_f32,
         rope_inplace_f16, scale_accumulate_f16, silu_mul_f16,
         Q4K_BLOCK_BYTES, Q4K_BLOCK_ELEMS,
     },
@@ -42,18 +46,21 @@ pub enum ForwardError {
 // Weight buffers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A weight buffer that is either pre-dequantized F16 or raw Q4K packed bytes.
-/// Q4K weights use the fused `gemv_q4k_f16` kernel that dequantizes on-the-fly,
-/// reading ~3.5x less memory bandwidth than the F16 path.
+/// A weight buffer in one of three formats:
+/// - **F16**: native or dequantized-to-f16 weights (small tensors, native f16 files)
+/// - **F32**: dequantized-to-f32 weights for precision (Q5_0, Q6K, Q8_0, etc.)
+/// - **Q4K**: raw packed Q4K bytes for fused on-the-fly dequant (bandwidth-optimal)
 pub(crate) enum WeightBuf {
     F16(metal::Buffer),
+    /// Weights dequantized to f32 for precision parity with llama.cpp.
+    /// Avoids the ~10-bit mantissa loss from f16 truncation that compounds across layers.
+    F32(metal::Buffer),
     /// Q4K weights: raw packed buffer for fused GEMV + dequanted F16 for GEMM prefill.
     Q4K { raw: metal::Buffer, f16: metal::Buffer },
 }
 
 impl WeightBuf {
     /// Dispatch GEMV using the appropriate kernel for this weight format.
-    /// Q4K weights use the fused kernel that reads ~3.5x less bandwidth.
     pub(crate) fn gemv(
         &self,
         ctx: &MetalContext,
@@ -63,18 +70,14 @@ impl WeightBuf {
         k: u32,
     ) -> Result<(), ForwardError> {
         match self {
-            WeightBuf::F16(buf) => {
-                gemv_f16(ctx, buf, input, output, m, k)?;
-            }
-            WeightBuf::Q4K { raw, .. } => {
-                gemv_q4k_f16(ctx, raw, input, output, m, k)?;
-            }
+            WeightBuf::F16(buf) => gemv_f16(ctx, buf, input, output, m, k)?,
+            WeightBuf::F32(buf) => gemv_f32w(ctx, buf, input, output, m, k)?,
+            WeightBuf::Q4K { raw, .. } => gemv_q4k_f16(ctx, raw, input, output, m, k)?,
         }
         Ok(())
     }
 
     /// Fused GEMV + residual add: `output[i] = (weight * input)[i] + residual[i]`.
-    /// Saves one kernel dispatch and one buffer pass vs separate gemv + add.
     pub(crate) fn gemv_add(
         &self,
         ctx: &MetalContext,
@@ -85,12 +88,87 @@ impl WeightBuf {
         k: u32,
     ) -> Result<(), ForwardError> {
         match self {
+            WeightBuf::F16(buf) => gemv_add_f16(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::F32(buf) => gemv_add_f32w(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f16(ctx, raw, input, output, residual, m, k)?,
+        }
+        Ok(())
+    }
+
+    /// GEMV with f32 input, f32 output: for Q/K/V where full precision matters.
+    pub(crate) fn gemv_f32_f32out(
+        &self,
+        ctx: &MetalContext,
+        input: &metal::Buffer,   // f32
+        output: &metal::Buffer,  // f32
+        m: u32,
+        k: u32,
+    ) -> Result<(), ForwardError> {
+        match self {
             WeightBuf::F16(buf) => {
-                gemv_add_f16(ctx, buf, input, output, residual, m, k)?;
+                // No f16w_f32in_f32out kernel yet; use f32in→f16 then widen (lossy)
+                gemv_f16w_f32in(ctx, buf, input, output, m, k)?;
             }
-            WeightBuf::Q4K { raw, .. } => {
-                gemv_q4k_add_f16(ctx, raw, input, output, residual, m, k)?;
+            WeightBuf::F32(buf) => {
+                gemv_f32_f32out(ctx, buf, input, output, m, k)?;
             }
+            WeightBuf::Q4K { f16, .. } => {
+                gemv_f16w_f32in(ctx, f16, input, output, m, k)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// GEMV with f32 input: `output_f16[i] = (weight * input_f32)[i]`.
+    pub(crate) fn gemv_f32in(
+        &self,
+        ctx: &MetalContext,
+        input: &metal::Buffer,   // f32
+        output: &metal::Buffer,  // f16
+        m: u32,
+        k: u32,
+    ) -> Result<(), ForwardError> {
+        match self {
+            WeightBuf::F16(buf) => gemv_f16w_f32in(ctx, buf, input, output, m, k)?,
+            WeightBuf::F32(buf) => gemv_f32w_f32in(ctx, buf, input, output, m, k)?,
+            WeightBuf::Q4K { f16, .. } => gemv_f16w_f32in(ctx, f16, input, output, m, k)?,
+        }
+        Ok(())
+    }
+
+    /// Fused GEMV + f32 residual with f32 input:
+    /// `output_f32[i] = (weight * input_f32)[i] + residual_f32[i]`.
+    pub(crate) fn gemv_add_f32(
+        &self,
+        ctx: &MetalContext,
+        input: &metal::Buffer,      // f32
+        output: &metal::Buffer,     // f32
+        residual: &metal::Buffer,   // f32
+        m: u32,
+        k: u32,
+    ) -> Result<(), ForwardError> {
+        match self {
+            WeightBuf::F16(buf) => gemv_add_f32_f16w(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::F32(buf) => gemv_add_f32_f32w(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::Q4K { f16, .. } => gemv_add_f32_f16w(ctx, f16, input, output, residual, m, k)?,
+        }
+        Ok(())
+    }
+
+    /// Fused GEMV + f32 residual: `output_f32[i] = (weight * input_f16)[i] + residual_f32[i]`.
+    pub(crate) fn gemv_add_f32res(
+        &self,
+        ctx: &MetalContext,
+        input: &metal::Buffer,      // f16
+        output: &metal::Buffer,     // f32
+        residual: &metal::Buffer,   // f32
+        m: u32,
+        k: u32,
+    ) -> Result<(), ForwardError> {
+        match self {
+            WeightBuf::F16(buf) => gemv_add_f32res_f16(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::F32(buf) => gemv_add_f32res_f32w(ctx, buf, input, output, residual, m, k)?,
+            WeightBuf::Q4K { raw, .. } => gemv_q4k_add_f32res_f16(ctx, raw, input, output, residual, m, k)?,
         }
         Ok(())
     }
@@ -99,6 +177,7 @@ impl WeightBuf {
     pub(crate) fn f16_buf(&self) -> &metal::Buffer {
         match self {
             WeightBuf::F16(buf) => buf,
+            WeightBuf::F32(_) => panic!("F32 weights: prefill GEMM needs f32-weight GEMM kernel (not yet implemented)"),
             WeightBuf::Q4K { f16, .. } => f16,
         }
     }
@@ -169,14 +248,14 @@ impl DecodeScratch {
         let q_dim  = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
         Self {
-            x:        ctx.new_buffer(h * 2),
-            x_norm:   ctx.new_buffer(h * 2),
+            x:        ctx.new_buffer(h * 4),  // f32 residual stream
+            x_norm:   ctx.new_buffer(h * 4),  // f32 for full-precision GEMV input
             q:        ctx.new_buffer(q_dim * 2),
             k:        ctx.new_buffer(kv_dim * 2),
             v:        ctx.new_buffer(kv_dim * 2),
             attn_out: ctx.new_buffer(q_dim * 2),
             proj:     ctx.new_buffer(h * 2),
-            x_norm2:  ctx.new_buffer(h * 2),
+            x_norm2:  ctx.new_buffer(h * 4),  // f32 for full-precision GEMV input
             gate:     ctx.new_buffer(ff_dim * 2),
             up:       ctx.new_buffer(ff_dim * 2),
             act:      ctx.new_buffer(ff_dim * 2),
@@ -185,7 +264,7 @@ impl DecodeScratch {
             logits:   ctx.new_buffer(cfg.vocab_size * 2),
             argmax:   ctx.new_buffer(4),  // 1 × u32
             router_logits: ctx.new_buffer(cfg.num_experts.max(1) * 2),
-            moe_out:       ctx.new_buffer(h * 2),
+            moe_out:       ctx.new_buffer(h * 2),  // f16 (accumulate per-expert, then add to f32 x)
         }
     }
 }
@@ -328,11 +407,21 @@ fn upload_weight(
             let d  = f16::from_le_bytes([block[0], block[1]]).to_f32();
             let qh = &block[2..6];
             let qs = &block[6..22];
-            for i in 0..BLOCK_ELEMS {
-                let low4  = if i % 2 == 0 { qs[i / 2] & 0x0F } else { (qs[i / 2] >> 4) & 0x0F };
-                let high1 = (qh[i / 8] >> (i % 8)) & 1;
-                let q5    = (low4 as i32) | ((high1 as i32) << 4);
-                f16_vec.push(f16::from_f32(d * (q5 - 16) as f32));
+            // ggml Q5_0 layout: first 16 elements from low nibbles of qs[0..15],
+            // next 16 elements from high nibbles of qs[0..15].
+            // High bits: elements 0..15 use qh[j/8] bit (j%8),
+            //            elements 16..31 use qh[j/8 + 2] bit (j%8) where j=i-16.
+            let mut vals = [0.0f32; 32];
+            for j in 0..16usize {
+                let xh_0 = ((qh[j / 8] >> (j % 8)) & 1) as i32;
+                let xh_1 = ((qh[j / 8 + 2] >> (j % 8)) & 1) as i32;
+                let x0 = (qs[j] as i32 & 0x0F) | (xh_0 << 4);
+                let x1 = ((qs[j] as i32 >> 4) & 0x0F) | (xh_1 << 4);
+                vals[j]      = d * (x0 - 16) as f32;
+                vals[j + 16] = d * (x1 - 16) as f32;
+            }
+            for v in &vals {
+                f16_vec.push(f16::from_f32(*v));
             }
         }
         let buf = ctx.device.new_buffer(f16_vec.len() as u64 * 2, opts);
@@ -365,15 +454,26 @@ fn upload_weight(
             let qh     = &block[128..192];
             let scales = &block[192..208];
             let d = f16::from_le_bytes([block[208], block[209]]).to_f32();
-            for i in 0..256usize {
-                let ql_byte = ql[i / 2];
-                let q_low  = if i % 2 == 0 { ql_byte & 0xF } else { (ql_byte >> 4) & 0xF };
-                let qh_byte = qh[i / 4];
-                let q_high = (qh_byte >> ((i % 4) * 2)) & 0x3;
-                let q6 = ((q_low as i32) | ((q_high as i32) << 4)) - 32;
-                let group = i / 16;
-                let sc = scales[group] as i8 as f32;
-                f16_vec.push(f16::from_f32(d * sc * q6 as f32));
+            // ggml Q6K layout: 2 halves of 128 elements, each with 4 interleaved groups of 32
+            let mut vals = [0.0f32; 256];
+            for n_half in [0usize, 128] {
+                for l in 0..32usize {
+                    let is = n_half / 16;
+                    let ql_idx0 = n_half / 2 + l;
+                    let ql_idx1 = n_half / 2 + l + 32;
+                    let qh_idx = n_half / 4 + l;
+                    let q1 = ((ql[ql_idx0] as i32 & 0x0F) | (((qh[qh_idx] as i32 >> 0) & 3) << 4)) - 32;
+                    let q2 = ((ql[ql_idx1] as i32 & 0x0F) | (((qh[qh_idx] as i32 >> 2) & 3) << 4)) - 32;
+                    let q3 = ((ql[ql_idx0] as i32 >> 4)    | (((qh[qh_idx] as i32 >> 4) & 3) << 4)) - 32;
+                    let q4 = ((ql[ql_idx1] as i32 >> 4)    | (((qh[qh_idx] as i32 >> 6) & 3) << 4)) - 32;
+                    vals[n_half + l +  0] = d * (scales[is + 0] as i8 as f32) * q1 as f32;
+                    vals[n_half + l + 32] = d * (scales[is + 2] as i8 as f32) * q2 as f32;
+                    vals[n_half + l + 64] = d * (scales[is + 4] as i8 as f32) * q3 as f32;
+                    vals[n_half + l + 96] = d * (scales[is + 6] as i8 as f32) * q4 as f32;
+                }
+            }
+            for v in &vals {
+                f16_vec.push(f16::from_f32(*v));
             }
         }
         let buf = ctx.device.new_buffer(f16_vec.len() as u64 * 2, opts);
@@ -481,19 +581,32 @@ fn upload_weight(
             let scales = &block[4..16];
             let qh     = &block[16..48];
             let qs     = &block[48..176];
-            for i in 0..BLOCK_ELEMS {
-                let sub   = i / 32;
-                // Get 6-bit scale and min for this sub-block (same packing as Q4K)
-                let (sc, m) = get_scale_min_k4(sub, scales);
-                let actual_scale = d    * sc as f32;
-                let actual_min   = dmin * m  as f32;
-                // Lower 4 bits from qs
-                let byte_idx = (sub * 32 + i % 32) / 2;
-                let nibble   = if i % 2 == 0 { qs[byte_idx] & 0x0F } else { qs[byte_idx] >> 4 };
-                // High bit from qh
-                let high_bit = (qh[i / 8] >> (i % 8)) & 1;
-                let q5 = nibble as u32 | ((high_bit as u32) << 4);
-                f16_vec.push(f16::from_f32(actual_scale * q5 as f32 - actual_min));
+            // ggml Q5K layout: same pairing as Q4K.
+            // 4 pairs (j=0..3): low nibble of qs[j*32..] → elements j*64+0..31, scale j
+            //                    high nibble of qs[j*32..] → elements j*64+32..63, scale j+4
+            // Plus 1 high bit per element from qh[0..31] (256 bits).
+            let mut vals = [0.0f32; 256];
+            for j in 0..4usize {
+                let (sc_lo, m_lo) = get_scale_min_k4(j, scales);
+                let (sc_hi, m_hi) = get_scale_min_k4(j + 4, scales);
+                let d_lo  = d * sc_lo as f32;
+                let m_lo2 = dmin * m_lo as f32;
+                let d_hi  = d * sc_hi as f32;
+                let m_hi2 = dmin * m_hi as f32;
+                for l in 0..32usize {
+                    let byte_val = qs[j * 32 + l];
+                    let elem_lo = j * 64 + l;
+                    let elem_hi = j * 64 + l + 32;
+                    let qh_lo = (qh[elem_lo / 8] >> (elem_lo % 8)) & 1;
+                    let qh_hi = (qh[elem_hi / 8] >> (elem_hi % 8)) & 1;
+                    let q5_lo = (byte_val & 0x0F) as u32 | ((qh_lo as u32) << 4);
+                    let q5_hi = (byte_val >> 4)    as u32 | ((qh_hi as u32) << 4);
+                    vals[elem_lo] = d_lo * q5_lo as f32 - m_lo2;
+                    vals[elem_hi] = d_hi * q5_hi as f32 - m_hi2;
+                }
+            }
+            for v in &vals {
+                f16_vec.push(f16::from_f32(*v));
             }
         }
         let buf = ctx.device.new_buffer(f16_vec.len() as u64 * 2, opts);
@@ -562,8 +675,246 @@ fn upload_weight(
     Ok(f16_buf)
 }
 
+/// Upload a weight tensor dequantized to f32 for precision parity with llama.cpp.
+///
+/// Handles all quantized types (Q5_0, Q6K, Q8_0, Q4_0, Q5K, Q8K, Q4K) plus
+/// BF16 and F32 (which stay as f32). Returns `None` for native F16 weights
+/// (no precision benefit from promoting to f32).
+fn upload_weight_as_f32(
+    ctx: &MetalContext,
+    model: &Model,
+    name: &str,
+) -> Result<Option<metal::Buffer>, ForwardError> {
+    let tensor = model
+        .tensors
+        .get(name)
+        .ok_or_else(|| ForwardError::MissingWeight(name.to_string()))?;
+
+    let dtype = tensor.dtype;
+    let n_elements = tensor.num_elements();
+
+    // Native F16 — no precision gain from promoting to f32
+    if dtype == DType::F16 {
+        return Ok(None);
+    }
+
+    let tb = model
+        .tensor_buffer(name)
+        .ok_or_else(|| ForwardError::MissingWeight(name.to_string()))?;
+
+    let opts = MTLResourceOptions::StorageModeShared;
+
+    // F32 — already in target precision, just copy
+    if dtype == DType::F32 {
+        let buf = ctx.device.new_buffer(tb.size as u64, opts);
+        unsafe {
+            std::ptr::copy_nonoverlapping(tb.ptr, buf.contents() as *mut u8, tb.size);
+        }
+        return Ok(Some(buf));
+    }
+
+    // BF16 → f32
+    if dtype == DType::BF16 {
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr as *const u16, n_elements) };
+        let f32_vec: Vec<f32> = raw.iter().map(|&bf| {
+            let bits = (bf as u32) << 16;
+            f32::from_bits(bits)
+        }).collect();
+        let buf = ctx.device.new_buffer((n_elements * 4) as u64, opts);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                f32_vec.as_ptr() as *const u8,
+                buf.contents() as *mut u8,
+                n_elements * 4,
+            );
+        }
+        return Ok(Some(buf));
+    }
+
+    // ── Quantized types → f32 ────────────────────────────────────────────────
+    let mut f32_vec: Vec<f32> = Vec::with_capacity(n_elements);
+
+    if dtype == DType::Q5_0 {
+        const BE: usize = 32;
+        const BB: usize = 22;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let d  = f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let qh = &block[2..6];
+            let qs = &block[6..22];
+            let mut vals = [0.0f32; 32];
+            for j in 0..16usize {
+                let xh_0 = ((qh[j / 8] >> (j % 8)) & 1) as i32;
+                let xh_1 = ((qh[j / 8 + 2] >> (j % 8)) & 1) as i32;
+                let x0 = (qs[j] as i32 & 0x0F) | (xh_0 << 4);
+                let x1 = ((qs[j] as i32 >> 4) & 0x0F) | (xh_1 << 4);
+                vals[j]      = d * (x0 - 16) as f32;
+                vals[j + 16] = d * (x1 - 16) as f32;
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else if dtype == DType::Q6K {
+        const BE: usize = 256;
+        const BB: usize = 210;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let ql     = &block[0..128];
+            let qh     = &block[128..192];
+            let scales = &block[192..208];
+            let d = f16::from_le_bytes([block[208], block[209]]).to_f32();
+            let mut vals = [0.0f32; 256];
+            for n_half in [0usize, 128] {
+                for l in 0..32usize {
+                    let is = n_half / 16;
+                    let ql_idx0 = n_half / 2 + l;
+                    let ql_idx1 = n_half / 2 + l + 32;
+                    let qh_idx = n_half / 4 + l;
+                    let q1 = ((ql[ql_idx0] as i32 & 0x0F) | (((qh[qh_idx] as i32 >> 0) & 3) << 4)) - 32;
+                    let q2 = ((ql[ql_idx1] as i32 & 0x0F) | (((qh[qh_idx] as i32 >> 2) & 3) << 4)) - 32;
+                    let q3 = ((ql[ql_idx0] as i32 >> 4)    | (((qh[qh_idx] as i32 >> 4) & 3) << 4)) - 32;
+                    let q4 = ((ql[ql_idx1] as i32 >> 4)    | (((qh[qh_idx] as i32 >> 6) & 3) << 4)) - 32;
+                    vals[n_half + l +  0] = d * (scales[is + 0] as i8 as f32) * q1 as f32;
+                    vals[n_half + l + 32] = d * (scales[is + 2] as i8 as f32) * q2 as f32;
+                    vals[n_half + l + 64] = d * (scales[is + 4] as i8 as f32) * q3 as f32;
+                    vals[n_half + l + 96] = d * (scales[is + 6] as i8 as f32) * q4 as f32;
+                }
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else if dtype == DType::Q8_0 {
+        const BE: usize = 32;
+        const BB: usize = 34;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let d  = f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let qs = &block[2..34];
+            for i in 0..BE {
+                f32_vec.push(d * qs[i] as i8 as f32);
+            }
+        }
+    } else if dtype == DType::Q4_0 {
+        const BE: usize = 32;
+        const BB: usize = 18;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let d  = f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let qs = &block[2..18];
+            for i in 0..BE {
+                let byte = qs[i / 2];
+                let nibble = if i % 2 == 0 { byte & 0x0F } else { (byte >> 4) & 0x0F };
+                f32_vec.push(d * (nibble as i32 - 8) as f32);
+            }
+        }
+    } else if dtype == DType::Q5K {
+        const BE: usize = 256;
+        const BB: usize = 176;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block  = &raw[b * BB..(b + 1) * BB];
+            let d      = f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let dmin   = f16::from_le_bytes([block[2], block[3]]).to_f32();
+            let scales = &block[4..16];
+            let qh     = &block[16..48];
+            let qs     = &block[48..176];
+            let mut vals = [0.0f32; 256];
+            for j in 0..4usize {
+                let (sc_lo, m_lo) = get_scale_min_k4(j, scales);
+                let (sc_hi, m_hi) = get_scale_min_k4(j + 4, scales);
+                let d_lo  = d * sc_lo as f32;
+                let m_lo2 = dmin * m_lo as f32;
+                let d_hi  = d * sc_hi as f32;
+                let m_hi2 = dmin * m_hi as f32;
+                for l in 0..32usize {
+                    let byte_val = qs[j * 32 + l];
+                    let elem_lo = j * 64 + l;
+                    let elem_hi = j * 64 + l + 32;
+                    let qh_lo = (qh[elem_lo / 8] >> (elem_lo % 8)) & 1;
+                    let qh_hi = (qh[elem_hi / 8] >> (elem_hi % 8)) & 1;
+                    let q5_lo = (byte_val & 0x0F) as u32 | ((qh_lo as u32) << 4);
+                    let q5_hi = (byte_val >> 4)    as u32 | ((qh_hi as u32) << 4);
+                    vals[elem_lo] = d_lo * q5_lo as f32 - m_lo2;
+                    vals[elem_hi] = d_hi * q5_hi as f32 - m_hi2;
+                }
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else if dtype == DType::Q8K {
+        const BE: usize = 256;
+        const BB: usize = 292;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let d = f32::from_le_bytes([block[0], block[1], block[2], block[3]]);
+            let qs = &block[4..260];
+            for i in 0..BE {
+                f32_vec.push(d * qs[i] as i8 as f32);
+            }
+        }
+    } else if dtype == DType::Q4K {
+        // CPU dequant for Q4K (used when K % 256 != 0 so fused GEMV can't be used)
+        const BE: usize = 256;
+        const BB: usize = 144;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block  = &raw[b * BB..(b + 1) * BB];
+            let d      = f16::from_le_bytes([block[0], block[1]]).to_f32();
+            let dmin   = f16::from_le_bytes([block[2], block[3]]).to_f32();
+            let scales = &block[4..16];
+            let qs     = &block[16..144];
+            let mut vals = [0.0f32; 256];
+            for j in 0..4usize {
+                let (sc_lo, m_lo) = get_scale_min_k4(j, scales);
+                let (sc_hi, m_hi) = get_scale_min_k4(j + 4, scales);
+                let d_lo  = d * sc_lo as f32;
+                let m_lo2 = dmin * m_lo as f32;
+                let d_hi  = d * sc_hi as f32;
+                let m_hi2 = dmin * m_hi as f32;
+                for l in 0..32usize {
+                    let byte_val = qs[j * 32 + l];
+                    let elem_lo = j * 64 + l;
+                    let elem_hi = j * 64 + l + 32;
+                    let q4_lo = (byte_val & 0x0F) as u32;
+                    let q4_hi = (byte_val >> 4)    as u32;
+                    vals[elem_lo] = d_lo * q4_lo as f32 - m_lo2;
+                    vals[elem_hi] = d_hi * q4_hi as f32 - m_hi2;
+                }
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else {
+        return Err(ForwardError::UnsupportedDtype {
+            tensor: name.to_string(),
+            dtype,
+        });
+    }
+
+    let buf = ctx.device.new_buffer((n_elements * 4) as u64, opts);
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            f32_vec.as_ptr() as *const u8,
+            buf.contents() as *mut u8,
+            n_elements * 4,
+        );
+    }
+    Ok(Some(buf))
+}
+
 /// Upload a weight tensor, keeping Q4K weights in packed form for fused GEMV.
 /// Returns a `WeightBuf` that dispatches to the appropriate GEMV kernel.
+///
+/// For non-Q4K quantized types, dequantizes to f32 for precision parity with
+/// llama.cpp (avoids the ~10-bit mantissa loss from f16 truncation).
 fn upload_weight_wb(
     ctx: &MetalContext,
     model: &Model,
@@ -576,8 +927,10 @@ fn upload_weight_wb(
         .get(name)
         .ok_or_else(|| ForwardError::MissingWeight(name.to_string()))?;
 
-    // Only use fused Q4K path if K is a multiple of 256 (Q4K block size)
-    if tensor.dtype == DType::Q4K && (k as usize % Q4K_BLOCK_ELEMS == 0) {
+    let dtype = tensor.dtype;
+
+    // Q4K with aligned K: use fused on-the-fly dequant (already f32 arithmetic internally)
+    if dtype == DType::Q4K && (k as usize % Q4K_BLOCK_ELEMS == 0) {
         let tb = model
             .tensor_buffer(name)
             .ok_or_else(|| ForwardError::MissingWeight(name.to_string()))?;
@@ -599,7 +952,19 @@ fn upload_weight_wb(
         return Ok(WeightBuf::Q4K { raw: raw_buf, f16: f16_buf });
     }
 
-    // Fall back to pre-dequantized F16 for other dtypes
+    // Native F16: keep as-is (already at true precision)
+    if dtype == DType::F16 {
+        return Ok(WeightBuf::F16(upload_weight(ctx, model, name)?));
+    }
+
+    // All other types (quantized, BF16, F32): dequant to f32 for precision
+    if let Some(f32_buf) = upload_weight_as_f32(ctx, model, name)? {
+        eprintln!("  [f32] {} dtype={:?} → F32 ({} bytes)", name, dtype, f32_buf.length());
+        return Ok(WeightBuf::F32(f32_buf));
+    }
+    eprintln!("  [f16] {} dtype={:?} → fallback F16", name, dtype);
+
+    // Shouldn't reach here, but fallback to F16
     Ok(WeightBuf::F16(upload_weight(ctx, model, name)?))
 }
 
@@ -692,34 +1057,48 @@ impl Executor {
                     }
                 } else {
                     // Merged expert tensors: shape [num_experts, out_dim, in_dim]
-                    // Upload the full tensor as F16, then create per-expert views.
-                    let gate_all = upload_weight(&ctx, model, &format!("blk.{l}.ffn_gate_exps.weight"))?;
-                    let up_all   = upload_weight(&ctx, model, &format!("blk.{l}.ffn_up_exps.weight"))?;
-                    let down_all = upload_weight(&ctx, model, &format!("blk.{l}.ffn_down_exps.weight"))?;
+                    // Dequant to f32 for precision, then create per-expert sub-buffers.
+                    let gate_name = format!("blk.{l}.ffn_gate_exps.weight");
+                    let up_name   = format!("blk.{l}.ffn_up_exps.weight");
+                    let down_name = format!("blk.{l}.ffn_down_exps.weight");
 
-                    // Derive actual expert FFN dimension from tensor size rather than
-                    // trusting config.intermediate_size (which may differ for MoE models).
-                    // gate_all is [num_experts, expert_ff_dim, hidden_size] in F16.
-                    let gate_total_f16_bytes = gate_all.length() as usize;
-                    let expert_ff_dim = gate_total_f16_bytes / (n_experts * (h as usize) * 2);
-                    let gate_expert_bytes = expert_ff_dim * (h as usize) * 2;
+                    // Try f32 first, fallback to f16
+                    let (gate_all, elem_size) = match upload_weight_as_f32(&ctx, model, &gate_name)? {
+                        Some(buf) => (buf, 4usize),
+                        None => (upload_weight(&ctx, model, &gate_name)?, 2usize),
+                    };
+                    let up_all = if elem_size == 4 {
+                        upload_weight_as_f32(&ctx, model, &up_name)?.unwrap()
+                    } else {
+                        upload_weight(&ctx, model, &up_name)?
+                    };
+                    let down_all = if elem_size == 4 {
+                        upload_weight_as_f32(&ctx, model, &down_name)?.unwrap()
+                    } else {
+                        upload_weight(&ctx, model, &down_name)?
+                    };
+
+                    // Flush any pending GPU work before CPU reads
+                    ctx.flush();
+
+                    // Derive actual expert FFN dimension from tensor size
+                    let gate_total_bytes = gate_all.length() as usize;
+                    let expert_ff_dim = gate_total_bytes / (n_experts * (h as usize) * elem_size);
+                    let gate_expert_bytes = expert_ff_dim * (h as usize) * elem_size;
                     let up_expert_bytes   = gate_expert_bytes;
-                    // down is [num_experts, hidden_size, expert_ff_dim]
-                    let down_expert_bytes = (h as usize) * expert_ff_dim * 2;
+                    let down_expert_bytes = (h as usize) * expert_ff_dim * elem_size;
 
                     if l == 0 {
                         tracing::info!(
                             expert_ff_dim,
                             config_ff_dim = ff_dim as usize,
+                            elem_size,
                             "MoE expert FFN dimension (derived from tensor)"
                         );
-                        // Update ff_dim for scratch buffer sizing and GEMV dispatches
                         ff_dim = expert_ff_dim as u32;
                     }
 
                     for e in 0..n_experts {
-                        // Create per-expert sub-buffers by copying from the merged tensor.
-                        // (Metal doesn't support buffer sub-ranges well, so we copy.)
                         let opts = MTLResourceOptions::StorageModeShared;
 
                         let g_buf = ctx.device.new_buffer(gate_expert_bytes as u64, opts);
@@ -736,9 +1115,15 @@ impl Executor {
                                 (down_all.contents() as *const u8).add(e * down_expert_bytes),
                                 d_buf.contents() as *mut u8, down_expert_bytes);
                         }
-                        layer_gates.push(WeightBuf::F16(g_buf));
-                        layer_ups.push(WeightBuf::F16(u_buf));
-                        layer_downs.push(WeightBuf::F16(d_buf));
+                        if elem_size == 4 {
+                            layer_gates.push(WeightBuf::F32(g_buf));
+                            layer_ups.push(WeightBuf::F32(u_buf));
+                            layer_downs.push(WeightBuf::F32(d_buf));
+                        } else {
+                            layer_gates.push(WeightBuf::F16(g_buf));
+                            layer_ups.push(WeightBuf::F16(u_buf));
+                            layer_downs.push(WeightBuf::F16(d_buf));
+                        }
                     }
                 }
 
@@ -760,6 +1145,7 @@ impl Executor {
 
         // Flush all pending GPU dequantisation work (Q4K uploads) in one batch.
         ctx.flush();
+
 
         // For MoE models, ff_dim may have been updated from tensor dimensions.
         // Re-derive config for scratch allocation.
@@ -810,18 +1196,20 @@ impl Executor {
             return Err(ForwardError::InvalidTokenId(token_id));
         }
 
-        // ── 1. Token embedding lookup ─────────────────────────────────────────
+        // ── 1. Token embedding lookup (f16 → f32 widening) ─────────────────
         let h = cfg.hidden_size;
-        let emb_row_bytes = h * 2;
         unsafe {
-            let src = (self.weights.tok_emb.contents() as *const u8)
-                .add(token_id as usize * emb_row_bytes);
-            std::ptr::copy_nonoverlapping(src, s.x.contents() as *mut u8, emb_row_bytes);
+            let src = (self.weights.tok_emb.contents() as *const f16)
+                .add(token_id as usize * h);
+            let dst = s.x.contents() as *mut f32;
+            for i in 0..h {
+                *dst.add(i) = (*src.add(i)).to_f32();
+            }
         }
 
         let q_dim  = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads  * cfg.head_dim;
-        let ff_dim = self.expert_ff_dim; // use actual expert FFN dim (may differ from config for MoE)
+        let ff_dim = self.expert_ff_dim;
         let kv_len_after = pos + 1;
         let max_seq = kv.max_seq_len();
         let hd = cfg.head_dim as u32;
@@ -831,26 +1219,71 @@ impl Executor {
         for l in 0..cfg.num_hidden_layers {
             let w = &self.weights;
 
-            // a) Attention pre-norm
-            rms_norm_f16(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+            // ── DIAGNOSTIC: trace L0 step-by-step at pos=0 ──────────────────
+            let diag = l == 0 && pos == 0;
+
+            if diag {
+                ctx.flush();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("DIAG L0 embedding[0..5]: {:?}", xv);
+            }
+
+            // a) Attention pre-norm (f32 → f32)
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
-            // b) Q projection + optional bias
-            w.attn_q[l].gemv(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+            if diag {
+                ctx.flush();
+                let px = s.x_norm.contents() as *const f32;
+                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("DIAG L0 x_norm[0..5]: {:?}", xv);
+            }
+
+            // b) Q projection with f32 input + optional bias
+            w.attn_q[l].gemv_f32in(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+
+            if diag {
+                ctx.flush();
+                let pq = s.q.contents() as *const f16;
+                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 Q_before_bias[0..5]: {:?}", qv);
+            }
             if let Some(bias) = &w.attn_q_bias[l] {
                 add_f16(ctx, &s.q, bias, &s.q, q_dim as u32)?;
             }
 
-            // c) K projection + optional bias
-            w.attn_k[l].gemv(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+            if diag {
+                ctx.flush();
+                let pq = s.q.contents() as *const f16;
+                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 Q_after_bias[0..5]: {:?}", qv);
+            }
+
+            // c) K projection with f32 input + optional bias
+            w.attn_k[l].gemv_f32in(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_k_bias[l] {
                 add_f16(ctx, &s.k, bias, &s.k, kv_dim as u32)?;
             }
 
-            // d) V projection + optional bias
-            w.attn_v[l].gemv(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+            if diag {
+                ctx.flush();
+                let pk = s.k.contents() as *const f16;
+                let kv_vals: Vec<f32> = (0..5).map(|i| unsafe { (*pk.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 K[0..5]: {:?}", kv_vals);
+            }
+
+            // d) V projection with f32 input + optional bias
+            w.attn_v[l].gemv_f32in(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_v_bias[l] {
                 add_f16(ctx, &s.v, bias, &s.v, kv_dim as u32)?;
+            }
+
+            if diag {
+                ctx.flush();
+                let pv = s.v.contents() as *const f16;
+                let vv: Vec<f32> = (0..5).map(|i| unsafe { (*pv.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 V[0..5]: {:?}", vv);
             }
 
             // e) RoPE in-place on Q and K
@@ -858,6 +1291,16 @@ impl Executor {
                              cfg.num_attention_heads as u32,
                              pos, cfg.rope_theta, 1)?;
             rope_inplace_f16(ctx, &s.k, hd, n_kv, pos, cfg.rope_theta, 1)?;
+
+            if diag {
+                ctx.flush();
+                let pq = s.q.contents() as *const f16;
+                let pk = s.k.contents() as *const f16;
+                let qv: Vec<f32> = (0..5).map(|i| unsafe { (*pq.add(i)).to_f32() }).collect();
+                let kv_vals: Vec<f32> = (0..5).map(|i| unsafe { (*pk.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 Q_rope[0..5]: {:?}", qv);
+                eprintln!("DIAG L0 K_rope[0..5]: {:?}", kv_vals);
+            }
 
             // f) Write K/V into cache — GPU-side scatter (no CPU flush needed!)
             kv_copy_to_cache_f16(ctx, &s.k, kv.k_buf(l), pos, max_seq, hd, n_kv)?;
@@ -870,11 +1313,31 @@ impl Executor {
                 cfg.num_attention_heads as u32, n_kv, hd, max_seq,
             )?;
 
-            // h) Output projection + residual (fused: saves 1 dispatch + 1 buffer pass)
-            w.attn_out[l].gemv_add(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+            if diag {
+                ctx.flush();
+                let pa = s.attn_out.contents() as *const f16;
+                let av: Vec<f32> = (0..5).map(|i| unsafe { (*pa.add(i)).to_f32() }).collect();
+                eprintln!("DIAG L0 attn_out[0..5]: {:?}", av);
+                eprintln!("DIAG L0 WeightBuf type: {}", match &w.attn_out[0] {
+                    WeightBuf::F16(_) => "F16",
+                    WeightBuf::F32(_) => "F32",
+                    WeightBuf::Q4K { .. } => "Q4K",
+                });
+            }
 
-            // i) FFN pre-norm
-            rms_norm_f16(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+            // h) Output projection + f32 residual
+            w.attn_out[l].gemv_add_f32res(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+
+            if diag {
+                ctx.flush();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("DIAG L0 x_after_attn[0..5]: {:?}", xv);
+                eprintln!("REF  L0 x_after_attn:       [-0.0136, -0.00293, 0.01099, 0.02084, -0.00693]");
+            }
+
+            // i) FFN pre-norm (f32 → f32)
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
             if cfg.is_moe() {
@@ -883,7 +1346,7 @@ impl Executor {
                 let top_k = cfg.num_experts_per_tok;
 
                 // Router: [num_experts, hidden_size] @ x_norm2 → [num_experts]
-                gemv_f16(ctx, &w.moe_router[l], &s.x_norm2, &s.router_logits,
+                gemv_f16w_f32in(ctx, &w.moe_router[l], &s.x_norm2, &s.router_logits,
                          n_exp as u32, h as u32)?;
 
                 // Flush to make router logits visible for CPU top-k
@@ -891,6 +1354,7 @@ impl Executor {
                 let (expert_ids, expert_weights) = topk_softmax(
                     &s.router_logits, n_exp, top_k,
                 );
+
 
                 // Zero the MoE output accumulator (CPU write is fine — no pending GPU work on this buffer)
                 unsafe {
@@ -900,8 +1364,8 @@ impl Executor {
                 // Run selected experts and accumulate on GPU — NO per-expert flush!
                 // All expert dispatches + scale_accumulate run async in one command buffer.
                 for (i, &eid) in expert_ids.iter().enumerate() {
-                    w.moe_gate_exps[l][eid].gemv(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                    w.moe_up_exps[l][eid].gemv(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                    w.moe_gate_exps[l][eid].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                    w.moe_up_exps[l][eid].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
                     silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
                     w.moe_down_exps[l][eid].gemv(ctx, &s.act, &s.ffn_out, h as u32, ff_dim as u32)?;
 
@@ -910,14 +1374,21 @@ impl Executor {
                                          expert_weights[i], h as u32)?;
                 }
 
-                // Residual: x += moe_out (all async, no flush needed here)
-                add_f16(ctx, &s.x, &s.moe_out, &s.x, h as u32)?;
+                // Residual: f32 x += f16 moe_out
+                add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                // ── Dense FFN ─────────────────────────────────────────────────
-                w.ffn_gate[l].gemv(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                // ── Dense FFN with f32 residual ──────────────────────────────
+                w.ffn_gate[l].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                w.ffn_up[l].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
                 silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
-                w.ffn_down[l].gemv_add(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+                w.ffn_down[l].gemv_add_f32res(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+            }
+
+            if pos == 0 {
+                ctx.flush();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("L{} f32 x_after_ffn[0..5]: {:?}", l, xv);
             }
         }
 
@@ -925,10 +1396,24 @@ impl Executor {
         kv.advance();
 
         // ── 3. Final norm + lm_head ───────────────────────────────────────────
-        rms_norm_f16(ctx, &s.x, &s.x_final, &self.weights.output_norm,
+        rms_norm_f32in_f16out(ctx, &s.x, &s.x_final, &self.weights.output_norm,
                      cfg.rms_norm_eps, h as u32, 1)?;
         self.weights.lm_head.gemv(ctx, &s.x_final, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
+
+        // DEBUG: dump logits for first few positions
+        if pos < 3 {
+            ctx.flush();
+            let px = s.x.contents() as *const f32;
+            let xv: Vec<f32> = (0..5).map(|i| unsafe { *px.add(i) }).collect();
+            eprintln!("f32 x_final[0..5]:  {:?}", xv);
+            eprintln!("REF (from before): [0.280, -16.063, 4.375, -0.865, 4.281] (was f16)");
+            let pl = s.logits.contents() as *const f16;
+            let mut all: Vec<(usize, f32)> = (0..cfg.vocab_size).map(|i| (i, unsafe { (*pl.add(i)).to_f32() })).collect();
+            all.sort_by(|a,b| b.1.partial_cmp(&a.1).unwrap());
+            eprintln!("OUR top-3: {:?}", &all[..3]);
+            eprintln!("REF top-3: [(322, 11.96), (89012, 11.49), (1747, 11.31)]");
+        }
 
         // ── 4. Download logits — flush for the entire token ───────────────────
         ctx.flush();
@@ -957,11 +1442,11 @@ impl Executor {
         }
 
         let h = cfg.hidden_size;
-        let emb_row_bytes = h * 2;
         unsafe {
-            let src = (self.weights.tok_emb.contents() as *const u8)
-                .add(token_id as usize * emb_row_bytes);
-            std::ptr::copy_nonoverlapping(src, s.x.contents() as *mut u8, emb_row_bytes);
+            let src = (self.weights.tok_emb.contents() as *const f16)
+                .add(token_id as usize * h);
+            let dst = s.x.contents() as *mut f32;
+            for i in 0..h { *dst.add(i) = (*src.add(i)).to_f32(); }
         }
 
         let q_dim  = cfg.num_attention_heads * cfg.head_dim;
@@ -975,18 +1460,18 @@ impl Executor {
         for l in 0..cfg.num_hidden_layers {
             let w = &self.weights;
 
-            rms_norm_f16(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm, &w.attn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
-            w.attn_q[l].gemv(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
+            w.attn_q[l].gemv_f32in(ctx, &s.x_norm, &s.q, q_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_q_bias[l] {
                 add_f16(ctx, &s.q, bias, &s.q, q_dim as u32)?;
             }
-            w.attn_k[l].gemv(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
+            w.attn_k[l].gemv_f32in(ctx, &s.x_norm, &s.k, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_k_bias[l] {
                 add_f16(ctx, &s.k, bias, &s.k, kv_dim as u32)?;
             }
-            w.attn_v[l].gemv(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
+            w.attn_v[l].gemv_f32in(ctx, &s.x_norm, &s.v, kv_dim as u32, h as u32)?;
             if let Some(bias) = &w.attn_v_bias[l] {
                 add_f16(ctx, &s.v, bias, &s.v, kv_dim as u32)?;
             }
@@ -1003,16 +1488,16 @@ impl Executor {
                 1, kv_len_after, cfg.num_attention_heads as u32, n_kv, hd, max_seq,
             )?;
 
-            w.attn_out[l].gemv_add(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+            w.attn_out[l].gemv_add_f32res(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
 
-            rms_norm_f16(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
+            rms_norm_f32_f32(ctx, &s.x, &s.x_norm2, &w.ffn_norm[l],
                          cfg.rms_norm_eps, h as u32, 1)?;
 
             if cfg.is_moe() {
                 let n_exp = cfg.num_experts;
                 let top_k = cfg.num_experts_per_tok;
 
-                gemv_f16(ctx, &w.moe_router[l], &s.x_norm2, &s.router_logits,
+                gemv_f16w_f32in(ctx, &w.moe_router[l], &s.x_norm2, &s.router_logits,
                          n_exp as u32, h as u32)?;
                 ctx.flush();
                 let (expert_ids, expert_weights) = topk_softmax(
@@ -1024,26 +1509,27 @@ impl Executor {
                 }
 
                 for (i, &eid) in expert_ids.iter().enumerate() {
-                    w.moe_gate_exps[l][eid].gemv(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                    w.moe_up_exps[l][eid].gemv(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                    w.moe_gate_exps[l][eid].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                    w.moe_up_exps[l][eid].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
                     silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
                     w.moe_down_exps[l][eid].gemv(ctx, &s.act, &s.ffn_out, h as u32, ff_dim as u32)?;
                     scale_accumulate_f16(ctx, &s.ffn_out, &s.moe_out,
                                          expert_weights[i], h as u32)?;
                 }
-                add_f16(ctx, &s.x, &s.moe_out, &s.x, h as u32)?;
+                add_f16_into_f32(ctx, &s.moe_out, &s.x, h as u32)?;
             } else {
-                w.ffn_gate[l].gemv(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
-                w.ffn_up[l].gemv(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
+                w.ffn_gate[l].gemv_f32in(ctx, &s.x_norm2, &s.gate, ff_dim as u32, h as u32)?;
+                w.ffn_up[l].gemv_f32in(ctx, &s.x_norm2, &s.up, ff_dim as u32, h as u32)?;
                 silu_mul_f16(ctx, &s.gate, &s.up, &s.act, ff_dim as u32)?;
-                w.ffn_down[l].gemv_add(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+                w.ffn_down[l].gemv_add_f32res(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
             }
         }
 
         kv.advance();
 
-        rms_norm_f16(ctx, &s.x, &s.x_final, &self.weights.output_norm,
+        rms_norm_f32in_f16out(ctx, &s.x, &s.x_final, &self.weights.output_norm,
                      cfg.rms_norm_eps, h as u32, 1)?;
+        // x_final is f16, lm_head expects f16 input
         self.weights.lm_head.gemv(ctx, &s.x_final, &s.logits,
                  cfg.vocab_size as u32, h as u32)?;
 

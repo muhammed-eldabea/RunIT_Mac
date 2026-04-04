@@ -103,6 +103,356 @@ pub fn rms_norm_f16(
     })
 }
 
+/// RMSNorm with f32 input → f16 output (for f32 residual stream).
+pub fn rms_norm_f32in_f16out(
+    ctx: &MetalContext,
+    x: &Buffer,       // f32 input
+    y: &Buffer,       // f16 output
+    gamma: &Buffer,   // f16 scale
+    eps: f32,
+    hidden: u32,
+    num_rows: u32,
+) -> Result<()> {
+    let sram_bytes = TG_ELEM * std::mem::size_of::<f32>() as u64;
+    ctx.encode("rms_norm_f32in_f16out", |enc| {
+        enc.set_buffer(0, Some(x),     0);
+        enc.set_buffer(1, Some(y),     0);
+        enc.set_buffer(2, Some(gamma), 0);
+        enc.set_bytes(3, 4, &eps    as *const f32 as *const _);
+        enc.set_bytes(4, 4, &hidden as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, sram_bytes);
+        enc.dispatch_thread_groups(
+            MTLSize { width: num_rows as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_ELEM,         height: 1, depth: 1 },
+        );
+    })
+}
+
+/// RMSNorm f32→f32 (full precision residual + output)
+pub fn rms_norm_f32_f32(
+    ctx: &MetalContext,
+    x: &Buffer,
+    y: &Buffer,
+    gamma: &Buffer,
+    eps: f32,
+    hidden: u32,
+    num_rows: u32,
+) -> Result<()> {
+    let sram_bytes = TG_ELEM * std::mem::size_of::<f32>() as u64;
+    ctx.encode("rms_norm_f32_f32", |enc| {
+        enc.set_buffer(0, Some(x),     0);
+        enc.set_buffer(1, Some(y),     0);
+        enc.set_buffer(2, Some(gamma), 0);
+        enc.set_bytes(3, 4, &eps    as *const f32 as *const _);
+        enc.set_bytes(4, 4, &hidden as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, sram_bytes);
+        enc.dispatch_thread_groups(
+            MTLSize { width: num_rows as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_ELEM,         height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Full f32 GEMV with f32 output: y_f32 = A_f32 * x_f32
+pub fn gemv_f32_f32out(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f32_f32out", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Full f32 GEMV: y_f16 = A_f32 * x_f32 (max precision)
+pub fn gemv_f32(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f32", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Full f32 GEMV + f32 residual add
+pub fn gemv_add_f32_full(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV with f16 weights and f32 input: y_f16 = A_f16 * x_f32
+pub fn gemv_f16w_f32in(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f16w_f32in", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV + f32 residual with f32 input
+pub fn gemv_add_f32_f16w(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32_f16w", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Add f16 source into f32 accumulator: acc[i] += src[i]
+pub fn add_f16_into_f32(
+    ctx: &MetalContext,
+    src: &Buffer,  // f16
+    acc: &Buffer,  // f32 (read-write)
+    n: u32,
+) -> Result<()> {
+    ctx.encode("add_f16_into_f32", |enc| {
+        enc.set_buffer(0, Some(src), 0);
+        enc.set_buffer(1, Some(acc), 0);
+        enc.set_bytes(2, 4, &n as *const u32 as *const _);
+        enc.dispatch_threads(
+            MTLSize { width: n as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_ELEM.min(n as u64), height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV + f32 residual add: y_f32[i] = (A_f16 * x_f16)[i] + res_f32[i]
+pub fn gemv_add_f32res_f16(
+    ctx: &MetalContext,
+    weight: &Buffer,    // f16 [M, K]
+    input: &Buffer,     // f16 [K]
+    output: &Buffer,    // f32 [M]
+    residual: &Buffer,  // f32 [M]
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32res_f16", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Q4K GEMV + f32 residual add
+pub fn gemv_q4k_add_f32res_f16(
+    ctx: &MetalContext,
+    weight_q4k: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q4k_add_f32res_f16", |enc| {
+        enc.set_buffer(0, Some(weight_q4k), 0);
+        enc.set_buffer(1, Some(input),      0);
+        enc.set_buffer(2, Some(output),     0);
+        enc.set_buffer(3, Some(residual),   0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// F32-weight GEMV variants (dequantized weights stored as f32 for precision)
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// GEMV with f32 weights: y_f16 = A_f32 * x_f16
+pub fn gemv_f32w(
+    ctx: &MetalContext,
+    weight: &Buffer,   // f32 [M, K]
+    input: &Buffer,    // f16 [K]
+    output: &Buffer,   // f16 [M]
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f32w", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// Fused GEMV + residual with f32 weights: y_f16 = A_f32 * x_f16 + residual_f16
+pub fn gemv_add_f32w(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32w", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV with f32 weights and f32 input: y_f16 = A_f32 * x_f32
+pub fn gemv_f32w_f32in(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_f32w_f32in", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV + f32 residual with f32 weights: y_f32 = A_f32 * x_f16 + residual_f32
+pub fn gemv_add_f32res_f32w(
+    ctx: &MetalContext,
+    weight: &Buffer,    // f32 [M, K]
+    input: &Buffer,     // f16 [K]
+    output: &Buffer,    // f32 [M]
+    residual: &Buffer,  // f32 [M]
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32res_f32w", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
+/// GEMV + f32 residual with f32 weights and f32 input: y_f32 = A_f32 * x_f32 + res_f32
+pub fn gemv_add_f32_f32w(
+    ctx: &MetalContext,
+    weight: &Buffer,
+    input: &Buffer,
+    output: &Buffer,
+    residual: &Buffer,
+    m: u32,
+    k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_add_f32_f32w", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_GEMV,  height: 1, depth: 1 },
+        );
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // RoPE: apply rotary embeddings in-place to Q or K
 // ─────────────────────────────────────────────────────────────────────────────

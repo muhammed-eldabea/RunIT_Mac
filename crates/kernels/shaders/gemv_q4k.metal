@@ -70,31 +70,30 @@ kernel void gemv_q4k_f16(
         // Base index into x for this block
         const uint x_base = blk * Q4K_BLOCK_ELEMS;
 
-        // Process all 8 sub-blocks (32 elements each)
-        for (uint sub = 0; sub < 8; sub++) {
-            float sc_f, m_f;
-            q4k_get_scale_min(sub, scales, sc_f, m_f);
+        // Process 4 pairs of sub-blocks (j=0..3), matching ggml Q4K layout:
+        //   Elements j*64+0..31:  low nibble of qs[j*32..], scale index j
+        //   Elements j*64+32..63: high nibble of qs[j*32..], scale index j+4
+        for (uint j = 0; j < 4; j++) {
+            float sc_lo, m_lo, sc_hi, m_hi;
+            q4k_get_scale_min(j,     scales, sc_lo, m_lo);
+            q4k_get_scale_min(j + 4, scales, sc_hi, m_hi);
 
-            const float actual_scale = d    * sc_f;
-            const float actual_min   = dmin * m_f;
+            const float d_lo  = d    * sc_lo;
+            const float m_lo2 = dmin * m_lo;
+            const float d_hi  = d    * sc_hi;
+            const float m_hi2 = dmin * m_hi;
 
-            const uint sub_offset = sub * 32;
+            const uint base_lo = j * 64;
+            const uint base_hi = j * 64 + 32;
 
-            // Unroll inner loop — process 32 elements per sub-block
-            // Read 16 bytes of qs (32 nibbles) and 32 f16 from x
-            for (uint i = 0; i < 32; i += 2) {
-                const uint byte_idx = (sub_offset + i) / 2;
-                const uchar byte_val = qs[byte_idx];
+            for (uint i = 0; i < 32; i++) {
+                const uchar byte_val = qs[j * 32 + i];
 
-                // Even element
-                const float q0 = float(byte_val & 0x0Fu);
-                const float w0 = actual_scale * q0 - actual_min;
-                acc += w0 * float(x_vec[x_base + sub_offset + i]);
+                const float q_lo = float(byte_val & 0x0Fu);
+                acc += (d_lo * q_lo - m_lo2) * float(x_vec[x_base + base_lo + i]);
 
-                // Odd element
-                const float q1 = float(byte_val >> 4u);
-                const float w1 = actual_scale * q1 - actual_min;
-                acc += w1 * float(x_vec[x_base + sub_offset + i + 1]);
+                const float q_hi = float(byte_val >> 4u);
+                acc += (d_hi * q_hi - m_hi2) * float(x_vec[x_base + base_hi + i]);
             }
         }
     }
@@ -138,24 +137,27 @@ kernel void gemv_q4k_add_f16(
         device const uchar* qs     = block + Q4K_QS_OFF;
         const uint x_base = blk * Q4K_BLOCK_ELEMS;
 
-        for (uint sub = 0; sub < 8; sub++) {
-            float sc_f, m_f;
-            q4k_get_scale_min(sub, scales, sc_f, m_f);
-            const float actual_scale = d    * sc_f;
-            const float actual_min   = dmin * m_f;
-            const uint sub_offset = sub * 32;
+        for (uint j = 0; j < 4; j++) {
+            float sc_lo, m_lo, sc_hi, m_hi;
+            q4k_get_scale_min(j,     scales, sc_lo, m_lo);
+            q4k_get_scale_min(j + 4, scales, sc_hi, m_hi);
 
-            for (uint i = 0; i < 32; i += 2) {
-                const uint byte_idx = (sub_offset + i) / 2;
-                const uchar byte_val = qs[byte_idx];
+            const float d_lo  = d    * sc_lo;
+            const float m_lo2 = dmin * m_lo;
+            const float d_hi  = d    * sc_hi;
+            const float m_hi2 = dmin * m_hi;
 
-                const float q0 = float(byte_val & 0x0Fu);
-                const float w0 = actual_scale * q0 - actual_min;
-                acc += w0 * float(x_vec[x_base + sub_offset + i]);
+            const uint base_lo = j * 64;
+            const uint base_hi = j * 64 + 32;
 
-                const float q1 = float(byte_val >> 4u);
-                const float w1 = actual_scale * q1 - actual_min;
-                acc += w1 * float(x_vec[x_base + sub_offset + i + 1]);
+            for (uint i = 0; i < 32; i++) {
+                const uchar byte_val = qs[j * 32 + i];
+
+                const float q_lo = float(byte_val & 0x0Fu);
+                acc += (d_lo * q_lo - m_lo2) * float(x_vec[x_base + base_lo + i]);
+
+                const float q_hi = float(byte_val >> 4u);
+                acc += (d_hi * q_hi - m_hi2) * float(x_vec[x_base + base_hi + i]);
             }
         }
     }
@@ -165,4 +167,45 @@ kernel void gemv_q4k_add_f16(
     if (lid == 0) {
         y[row] = half(acc + float(residual[row]));
     }
+}
+
+// Q4K GEMV + f32 residual: y_f32[i] = (A_q4k * x_f16)[i] + residual_f32[i]
+kernel void gemv_q4k_add_f32res_f16(
+    device const uchar* A_q4k    [[buffer(0)]],
+    device const half*  x_vec    [[buffer(1)]],
+    device       float* y        [[buffer(2)]],
+    device const float* residual [[buffer(3)]],
+    constant     uint&  M        [[buffer(4)]],
+    constant     uint&  K        [[buffer(5)]],
+    uint row   [[threadgroup_position_in_grid]],
+    uint lid   [[thread_position_in_threadgroup]],
+    uint lsize [[threads_per_threadgroup]])
+{
+    if (row >= M) return;
+    const uint n_blocks_per_row = K / Q4K_BLOCK_ELEMS;
+    device const uchar* row_data = A_q4k + row * n_blocks_per_row * Q4K_BLOCK_BYTES;
+    float acc = 0.0f;
+    for (uint blk = lid; blk < n_blocks_per_row; blk += lsize) {
+        device const uchar* block = row_data + blk * Q4K_BLOCK_BYTES;
+        const float d    = float(*reinterpret_cast<device const half*>(block + 0));
+        const float dmin = float(*reinterpret_cast<device const half*>(block + 2));
+        device const uchar* scales = block + Q4K_SCALES_OFF;
+        device const uchar* qs     = block + Q4K_QS_OFF;
+        const uint x_base = blk * Q4K_BLOCK_ELEMS;
+        for (uint j = 0; j < 4; j++) {
+            float sc_lo, m_lo, sc_hi, m_hi;
+            q4k_get_scale_min(j,     scales, sc_lo, m_lo);
+            q4k_get_scale_min(j + 4, scales, sc_hi, m_hi);
+            const float d_lo = d*sc_lo, m_lo2 = dmin*m_lo;
+            const float d_hi = d*sc_hi, m_hi2 = dmin*m_hi;
+            const uint base_lo = j*64, base_hi = j*64+32;
+            for (uint i = 0; i < 32; i++) {
+                const uchar bv = qs[j*32+i];
+                acc += (d_lo*float(bv&0x0Fu)-m_lo2) * float(x_vec[x_base+base_lo+i]);
+                acc += (d_hi*float(bv>>4u)-m_hi2)   * float(x_vec[x_base+base_hi+i]);
+            }
+        }
+    }
+    acc = simd_sum(acc);
+    if (lid == 0) y[row] = acc + residual[row];
 }

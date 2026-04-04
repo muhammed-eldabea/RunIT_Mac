@@ -71,23 +71,26 @@ kernel void dequant_q4k_f16(
     device const uchar* qs     = block + QS_OFF;      // 128-byte 4-bit quants
 
     // Determine sub-block for this thread
-    const uint sub   = lid / 32u;   // sub-block index 0..7
-    const uint local = lid % 32u;   // position within sub-block 0..31
+    // ggml Q4K layout: 4 pairs (j=0..3), each pair shares 32 qs bytes.
+    // Elements j*64+0..31 use low nibble with scale j.
+    // Elements j*64+32..63 use high nibble with scale j+4.
+    const uint sub   = lid / 32u;   // linear sub-block 0..7
+    const uint local = lid % 32u;   // position within sub-block
+
+    const uint pair    = sub / 2u;           // pair index j = 0..3
+    const bool is_high = (sub & 1u) != 0u;   // high nibble half?
+    const uint scale_idx = is_high ? (pair + 4u) : pair;  // correct scale mapping
 
     uchar sc, m;
-    get_scale_min_k4(sub, scales, sc, m);
+    get_scale_min_k4(scale_idx, scales, sc, m);
 
     const float actual_scale = d    * float(sc);
     const float actual_min   = dmin * float(m);
 
     // Unpack 4-bit value for this element
-    // qs stores pairs: qs[k] = low_nibble | (high_nibble << 4)
-    // element (sub*32 + local):
-    //   byte index  = (sub*32 + local) / 2
-    //   nibble      = low if local is even, high if odd
-    const uint byte_idx = (sub * 32u + local) / 2u;
+    const uint byte_idx = pair * 32u + local;
     const uchar byte_val = qs[byte_idx];
-    const uint q4 = (local & 1u) ? (byte_val >> 4u) : (byte_val & 0x0Fu);
+    const uint q4 = is_high ? (byte_val >> 4u) : (byte_val & 0x0Fu);
 
     const float val = actual_scale * float(q4) - actual_min;
 
