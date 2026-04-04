@@ -1027,16 +1027,16 @@ fn upload_weight_wb(
         return Ok(WeightBuf::F16(upload_weight(ctx, model, name)?));
     }
 
-    // ── PERFORMANCE: Dequant to f16 for bandwidth-optimal GEMV ──────────
-    // Quantized types (Q5_0, Q5K, Q6K, Q8_0, Q8K, Q4_0, BF16) have ≤8
-    // significant bits — well within f16's 10-bit mantissa. Dequanting to
-    // f32 wastes 2x memory bandwidth for zero precision gain.
+    // PERFORMANCE: Use f16 for non-Q8_0 quantized types to halve BW.
+    // Q8_0 gets its own fused path above. Other types (Q5_0, Q5K, Q6K, etc.)
+    // dequant to f16 which preserves their ≤8-bit precision.
     //
-    // Impact: For Q8_0 model (K=896), this halves weight read bandwidth
-    // for all Q/K/V/O and FFN projections → ~2x decode speedup.
-    //
-    // Q4K with non-aligned K: also safe — the dequanted values only have
-    // ~4.5 bits of effective precision.
+    // Exception: if env FORCE_F32_WEIGHTS is set, use f32 for debugging.
+    if std::env::var("FORCE_F32_WEIGHTS").is_ok() {
+        if let Some(f32_buf) = upload_weight_as_f32(ctx, model, name)? {
+            return Ok(WeightBuf::F32(f32_buf));
+        }
+    }
     Ok(WeightBuf::F16(upload_weight(ctx, model, name)?))
 }
 
@@ -1325,6 +1325,13 @@ impl Executor {
         let hd = cfg.head_dim as u32;
         let n_kv = cfg.num_key_value_heads as u32;
 
+        // Debug: dump embedding for first token
+        if std::env::var("DEBUG_EMB").is_ok() && pos == 0 {
+            let px = s.x.contents() as *const f32;
+            let emb: Vec<f32> = (0..8).map(|i| unsafe { *px.add(i) }).collect();
+            eprintln!("EMB tok={} x[0..8]={:?}", token_id, emb);
+        }
+
         // ── 2. Transformer layers ─────────────────────────────────────────────
         for l in 0..cfg.num_hidden_layers {
             let w = &self.weights;
@@ -1376,6 +1383,20 @@ impl Executor {
                 }
             }
 
+            // Debug: dump Q after projection for layer 0
+            if std::env::var("DEBUG_QKV").is_ok() && l == 0 {
+                ctx.flush();
+                let pn = s.x_norm.contents() as *const f32;
+                let norm_v: Vec<f32> = (0..4).map(|i| unsafe { *pn.add(i) }).collect();
+                let pq = s.q.contents() as *const f32;
+                let qv: Vec<f32> = (0..4).map(|i| unsafe { *pq.add(i) }).collect();
+                let pk = s.k.contents() as *const f32;
+                let kv: Vec<f32> = (0..4).map(|i| unsafe { *pk.add(i) }).collect();
+                eprintln!("L0 x_norm[0..4]={:.6?}", norm_v);
+                eprintln!("L0 Q[0..4]={:.6?}", qv);
+                eprintln!("L0 K[0..4]={:.6?}", kv);
+            }
+
             // e) Fused RoPE: apply to BOTH Q and K in ONE dispatch
             fused_rope_qk_f32(ctx, &s.q, &s.k, hd,
                               cfg.num_attention_heads as u32, n_kv,
@@ -1397,6 +1418,17 @@ impl Executor {
 
             // h) Output projection: f32 attn_out + f32 residual → f32 output
             w.attn_out[l].gemv_add_f32(ctx, &s.attn_out, &s.x, &s.x, h as u32, q_dim as u32)?;
+
+            // Debug: dump attention output for layer 0
+            if std::env::var("DEBUG_QKV").is_ok() && l == 0 {
+                ctx.flush();
+                let pa = s.attn_out.contents() as *const f32;
+                let av: Vec<f32> = (0..4).map(|i| unsafe { *pa.add(i) }).collect();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..4).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("L0 attn_out[0..4]={:.6?}", av);
+                eprintln!("L0 x_after_attn[0..4]={:.6?}", xv);
+            }
 
             if _profile_detail { ctx.flush(); _t_attn += _ts.elapsed().as_secs_f64() * 1000.0; }
             let _ts = std::time::Instant::now();
@@ -1465,6 +1497,42 @@ impl Executor {
                     }
                 }
                 w.ffn_down[l].gemv_add_f32(ctx, &s.act, &s.x, &s.x, h as u32, ff_dim as u32)?;
+            }
+
+            // Debug: dump FFN down weights for layer 0
+            if std::env::var("DEBUG_WEIGHTS").is_ok() && l == 0 {
+                match &w.ffn_down[l] {
+                    WeightBuf::F16(buf) => {
+                        let p = buf.contents() as *const f16;
+                        let v: Vec<f32> = (0..8).map(|i| unsafe { (*p.add(i)).to_f32() }).collect();
+                        eprintln!("L0 ffn_down F16[0..8]={:.6?}", v);
+                    }
+                    WeightBuf::F32(buf) => {
+                        let p = buf.contents() as *const f32;
+                        let v: Vec<f32> = (0..8).map(|i| unsafe { *p.add(i) }).collect();
+                        eprintln!("L0 ffn_down F32[0..8]={:.6?}", v);
+                    }
+                    WeightBuf::Q8_0 { f16, .. } => {
+                        let p = f16.contents() as *const f16;
+                        let v: Vec<f32> = (0..8).map(|i| unsafe { (*p.add(i)).to_f32() }).collect();
+                        eprintln!("L0 ffn_down Q8_0.f16[0..8]={:.6?}", v);
+                    }
+                    _ => eprintln!("L0 ffn_down: other type"),
+                }
+            }
+
+            // Debug: dump FFN intermediates for layer 0
+            if std::env::var("DEBUG_QKV").is_ok() && l == 0 {
+                ctx.flush();
+                let pn = s.x_norm2.contents() as *const f32;
+                let nv: Vec<f32> = (0..4).map(|i| unsafe { *pn.add(i) }).collect();
+                let pa = s.act.contents() as *const f32;
+                let av: Vec<f32> = (0..4).map(|i| unsafe { *pa.add(i) }).collect();
+                let px = s.x.contents() as *const f32;
+                let xv: Vec<f32> = (0..4).map(|i| unsafe { *px.add(i) }).collect();
+                eprintln!("L0 ffn_norm[0..4]={:.6?}", nv);
+                eprintln!("L0 act[0..4]={:.6?}", av);
+                eprintln!("L0 x_after_ffn[0..4]={:.6?}", xv);
             }
 
             if _profile_detail { ctx.flush(); _t_ffn += _ts.elapsed().as_secs_f64() * 1000.0; }
