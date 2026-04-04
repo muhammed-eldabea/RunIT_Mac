@@ -78,6 +78,20 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemm_f16",
     // rope.metal (batch)
     "rope_batch_inplace_f16",
+    // fused_ffn.metal (gate+up+silu in one dispatch — saves 48 dispatches/token)
+    "fused_ffn_q8_0_f32",
+    "fused_ffn_f16w_f32",
+    // fused_rope.metal (Q+K RoPE in one dispatch — saves 24 dispatches/token)
+    "fused_rope_qk_f32",
+    // gemm.metal (simdgroup_matrix AMX)
+    "gemm_f16_simd",
+    // gemv_multirow.metal (4 rows per TG, 128 threads)
+    "gemv_f16_mr",
+    "gemv_add_f16_mr",
+    "gemv_f16w_f32in_f32out_mr",
+    "gemv_add_f32_f16w_mr",
+    "gemv_q8_0_f32in_f32out_mr",
+    "gemv_q8_0_add_f32_f32in_mr",
     // gemv_q8_0.metal (fused Q8_0 dequant — 47% less bandwidth than f16)
     "gemv_q8_0_f32in_f32out",
     "gemv_q8_0_add_f32_f32in",
