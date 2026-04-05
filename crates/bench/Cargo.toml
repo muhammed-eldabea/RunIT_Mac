@@ -3,7 +3,11 @@ name = "bare-metal-bench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Benchmarks for bare-metal LLM inference engine"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Performance benchmarks for bare-metal LLM inference engine"
+publish = false
 
 [[bench]]
 name = "gguf_parse"

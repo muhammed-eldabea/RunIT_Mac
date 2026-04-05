@@ -3,7 +3,12 @@ name = "bare-metal-tokenizer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "BPE tokenizer wrapper for bare-metal LLM inference"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "HuggingFace BPE tokenizer wrapper for bare-metal LLM inference"
+keywords = ["tokenizer", "llm", "bpe", "inference"]
+categories = ["text-processing"]
 
 [dependencies]
 tokenizers = { workspace = true }

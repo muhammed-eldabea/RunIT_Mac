@@ -10,17 +10,20 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
+repository = "https://github.com/muhammed-eldabea/RunIT_Mac"
+homepage = "https://github.com/muhammed-eldabea/RunIT_Mac"
+authors = ["Mohamed Eldabaa"]
 
 [workspace.dependencies]
 # Internal crates
-bare-metal-gguf = { path = "crates/gguf" }
-bare-metal-engine = { path = "crates/engine" }
-bare-metal-reference = { path = "crates/reference" }
-bare-metal-tokenizer = { path = "crates/tokenizer" }
-bare-metal-kernels = { path = "crates/kernels" }
+bare-metal-gguf = { path = "crates/gguf", version = "0.7.0" }
+bare-metal-engine = { path = "crates/engine", version = "0.7.0" }
+bare-metal-reference = { path = "crates/reference", version = "0.7.0" }
+bare-metal-tokenizer = { path = "crates/tokenizer", version = "0.7.0" }
+bare-metal-kernels = { path = "crates/kernels", version = "0.7.0" }
 
 # ML reference
 candle-core = { version = "0.8", features = ["metal"] }

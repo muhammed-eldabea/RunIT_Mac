@@ -4,7 +4,7 @@
 
 # ── Rust / Cargo ──────────────────────────────────────────
 /target/
-**/*.rs.bk
+**/*.rs.bkcaca
 Cargo.lock
 !Cargo.lock
 
@@ -61,3 +61,22 @@ venv/
 
 # ── Claude / AI assistant state ──────────────────────────
 .claude/
+repo-visualizer/.gitignore
+repo-visualizer/eslint.config.js
+repo-visualizer/index.html
+repo-visualizer/package-lock.json
+repo-visualizer/package.json
+repo-visualizer/README.md
+repo-visualizer/server.js
+repo-visualizer/vite.config.js
+repo-visualizer/public/favicon.svg
+repo-visualizer/public/icons.svg
+repo-visualizer/src/App.css
+repo-visualizer/src/App.jsx
+repo-visualizer/src/index.css
+repo-visualizer/src/main.jsx
+repo-visualizer/src/assets/hero.png
+repo-visualizer/src/assets/react.svg
+repo-visualizer/src/assets/vite.svg
+Proposal Performcne.txt
+pi-session-2026-04-04T14-49-39-640Z_756b7a3a-10e8-4ae3-a047-95a44acf8d9d.html

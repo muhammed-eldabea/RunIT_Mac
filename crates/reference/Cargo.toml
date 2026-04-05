@@ -3,7 +3,12 @@ name = "bare-metal-reference"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Candle-based reference backend and numerical validation harness"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Numerical validation harness for bare-metal LLM inference kernels"
+keywords = ["llm", "inference", "validation", "testing"]
+categories = ["development-tools::testing"]
 
 [dependencies]
 thiserror = { workspace = true }

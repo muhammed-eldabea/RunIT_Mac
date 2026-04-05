@@ -3,7 +3,12 @@ name = "bare-metal-kernels"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Metal GPU kernel dispatch layer for bare-metal LLM inference"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Metal GPU kernels for LLM inference on Apple Silicon — 85+ optimized compute shaders"
+keywords = ["metal", "gpu", "llm", "apple-silicon", "inference"]
+categories = ["science", "hardware-support"]
 build = "build.rs"
 
 [dependencies]

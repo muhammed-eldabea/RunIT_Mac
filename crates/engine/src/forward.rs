@@ -722,6 +722,100 @@ fn upload_weight(
         return Ok(buf);
     }
 
+    // ── Q3K → F16 CPU dequantization ───────────────────────────────────
+    // Block layout (110 bytes = 256 elements):
+    //   hmask[32]: high bit per element
+    //   qs[64]:    2 low bits per element (4 per byte)
+    //   scales[12]: packed 6-bit scales
+    //   d (f16):   super-block scale
+    if dtype == DType::Q3K {
+        const BLOCK_ELEMS: usize = 256;
+        const BLOCK_BYTES: usize = 110;
+        let n_elements = tensor.num_elements();
+        let n_blocks = n_elements / BLOCK_ELEMS;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BLOCK_BYTES) };
+        let mut f16_vec: Vec<f16> = Vec::with_capacity(n_elements);
+        for b in 0..n_blocks {
+            let block = &raw[b * BLOCK_BYTES..(b + 1) * BLOCK_BYTES];
+            let hmask  = &block[0..32];
+            let qs     = &block[32..96];
+            let scales = &block[96..108];
+            let d = f16::from_le_bytes([block[108], block[109]]).to_f32();
+            // Q3K scale unpacking: 12 bytes encode 16 scales
+            // Low 6 bytes: each byte → 2 scales (lo nibble + hi nibble)
+            // High 6 bytes: additional bits for scales 8..15
+            let mut sc = [0i32; 16];
+            for i in 0..8 {
+                let lo = (scales[i] & 0x0F) as i32;
+                let hi = (scales[i] >> 4) as i32;
+                sc[i] = lo;
+                sc[i + 8] = hi;
+            }
+            // Make scales signed: Q3K scales are offset by 32
+            // (or use them as-is with the q-4 offset)
+            let mut vals = [0.0f32; 256];
+            for j in 0..256 {
+                let byte_idx = j / 4;
+                let bit_pos = (j % 4) * 2;
+                let q_lo = ((qs[byte_idx] >> bit_pos) & 3) as i32;
+                let q_hi = ((hmask[j / 8] >> (j % 8)) & 1) as i32;
+                let q = q_lo | (q_hi << 2); // 3-bit value 0..7
+                let sub_block = j / 16;
+                vals[j] = d * sc[sub_block] as f32 * (q as f32 - 4.0);
+            }
+            for v in &vals {
+                f16_vec.push(f16::from_f32(*v));
+            }
+        }
+        let buf = ctx.device.new_buffer(f16_vec.len() as u64 * 2, opts);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                f16_vec.as_ptr() as *const u8, buf.contents() as *mut u8, f16_vec.len() * 2);
+        }
+        return Ok(buf);
+    }
+
+    // ── Q2K → F16 CPU dequantization ───────────────────────────────────
+    // Block layout (84 bytes = 256 elements):
+    //   scales[16]:  4-bit scale + 4-bit min per group
+    //   qs[64]:      2-bit values (4 per byte)
+    //   d (f16):     super-block scale
+    //   dmin (f16):  super-block min
+    if dtype == DType::Q2K {
+        const BLOCK_ELEMS: usize = 256;
+        const BLOCK_BYTES: usize = 84;
+        let n_elements = tensor.num_elements();
+        let n_blocks = n_elements / BLOCK_ELEMS;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BLOCK_BYTES) };
+        let mut f16_vec: Vec<f16> = Vec::with_capacity(n_elements);
+        for b in 0..n_blocks {
+            let block = &raw[b * BLOCK_BYTES..(b + 1) * BLOCK_BYTES];
+            let scales = &block[0..16];
+            let qs     = &block[16..80];
+            let d    = f16::from_le_bytes([block[80], block[81]]).to_f32();
+            let dmin = f16::from_le_bytes([block[82], block[83]]).to_f32();
+            let mut vals = [0.0f32; 256];
+            for j in 0..256 {
+                let byte_idx = j / 4;
+                let bit_pos = (j % 4) * 2;
+                let q = ((qs[byte_idx] >> bit_pos) & 3) as f32;
+                let group = j / 16;
+                let sc = (scales[group] & 0x0F) as f32;
+                let m  = (scales[group] >> 4) as f32;
+                vals[j] = d * sc * q - dmin * m;
+            }
+            for v in &vals {
+                f16_vec.push(f16::from_f32(*v));
+            }
+        }
+        let buf = ctx.device.new_buffer(f16_vec.len() as u64 * 2, opts);
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                f16_vec.as_ptr() as *const u8, buf.contents() as *mut u8, f16_vec.len() * 2);
+        }
+        return Ok(buf);
+    }
+
     if dtype != DType::Q4K {
         return Err(ForwardError::UnsupportedDtype {
             tensor: name.to_string(),
@@ -958,6 +1052,47 @@ fn upload_weight_as_f32(
                     vals[elem_lo] = d_lo * q4_lo as f32 - m_lo2;
                     vals[elem_hi] = d_hi * q4_hi as f32 - m_hi2;
                 }
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else if dtype == DType::Q2K {
+        const BE: usize = 256;
+        const BB: usize = 84;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let scales = &block[0..16];
+            let qs = &block[16..80];
+            let d    = f16::from_le_bytes([block[80], block[81]]).to_f32();
+            let dmin = f16::from_le_bytes([block[82], block[83]]).to_f32();
+            let mut vals = [0.0f32; 256];
+            for j in 0..256 {
+                let q = ((qs[j / 4] >> ((j % 4) * 2)) & 3) as f32;
+                let group = j / 16;
+                let sc = (scales[group] & 0x0F) as f32;
+                let m  = (scales[group] >> 4) as f32;
+                vals[j] = d * sc * q - dmin * m;
+            }
+            f32_vec.extend_from_slice(&vals);
+        }
+    } else if dtype == DType::Q3K {
+        const BE: usize = 256;
+        const BB: usize = 110;
+        let n_blocks = n_elements / BE;
+        let raw = unsafe { std::slice::from_raw_parts(tb.ptr, n_blocks * BB) };
+        for b in 0..n_blocks {
+            let block = &raw[b * BB..(b + 1) * BB];
+            let hmask  = &block[0..32];
+            let qs     = &block[32..96];
+            let _scales = &block[96..108];
+            let d = f16::from_le_bytes([block[108], block[109]]).to_f32();
+            let mut vals = [0.0f32; 256];
+            for j in 0..256 {
+                let q_lo = ((qs[j / 4] >> ((j % 4) * 2)) & 3) as i32;
+                let q_hi = ((hmask[j / 8] >> (j % 8)) & 1) as i32;
+                let q = q_lo | (q_hi << 2);
+                vals[j] = d * (q as f32 - 4.0);
             }
             f32_vec.extend_from_slice(&vals);
         }

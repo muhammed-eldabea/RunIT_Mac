@@ -3,7 +3,12 @@ name = "bare-metal-gguf"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GGUF binary format parser for bare-metal LLM inference"
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "GGUF binary format parser for bare-metal LLM inference — zero-copy mmap, all quantization types"
+keywords = ["gguf", "llm", "inference", "parser", "quantization"]
+categories = ["parser-implementations", "science"]
 
 [dependencies]
 thiserror = { workspace = true }
