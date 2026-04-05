@@ -20,6 +20,7 @@ use bare_metal_kernels::{
         gemv_f32_f32out, gemv_f32w, gemv_add_f32w, gemv_f32w_f32in, gemv_add_f32res_f32w, gemv_add_f32_f32w,
         gemv_q8_0_f32in_f32out, gemv_q8_0_add_f32_f32in,
         gemv_q8_0_f32in, gemv_q8_0_f16, gemv_q8_0_add_f16, gemv_q8_0_add_f32res_f16,
+        gemv_q8_0_f32in_f32out_wide, gemv_q8_0_add_f32_f32in_wide, gemv_q8_0_f32in_wide,
         gemv_q4_0_f32in_f32out, gemv_q4_0_add_f32_f32in,
         gemv_q4_0_f32in, gemv_q4_0_f16, gemv_q4_0_add_f16,
         fused_ffn_q4_0_f32,

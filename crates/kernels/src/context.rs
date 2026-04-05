@@ -103,6 +103,10 @@ pub const KERNEL_NAMES: &[&str] = &[
     "gemv_add_f32_f16w_mr",
     "gemv_q8_0_f32in_f32out_mr",
     "gemv_q8_0_add_f32_f32in_mr",
+    // gemv_q8_0_wide.metal (256 threads/row for better BW saturation)
+    "gemv_q8_0_f32in_f32out_wide",
+    "gemv_q8_0_add_f32_f32in_wide",
+    "gemv_q8_0_f32in_wide",
     // gemv_q8_0.metal (fused Q8_0 dequant — 47% less bandwidth than f16)
     "gemv_q8_0_f32in_f32out",
     "gemv_q8_0_add_f32_f32in",

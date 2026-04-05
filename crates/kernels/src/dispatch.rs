@@ -1388,6 +1388,65 @@ pub fn gemv_q8_0_add_f32res_f16(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Wide Q8_0 GEMV: 256 threads/row for better memory BW saturation
+// ─────────────────────────────────────────────────────────────────────────────
+
+const TG_WIDE: u64 = 256;
+const WIDE_SRAM: u64 = 8 * 4; // 8 SIMD groups × sizeof(float)
+
+pub fn gemv_q8_0_f32in_f32out_wide(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f32in_f32out_wide", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, WIDE_SRAM);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_WIDE, height: 1, depth: 1 });
+    })
+}
+
+pub fn gemv_q8_0_add_f32_f32in_wide(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    residual: &Buffer, m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_add_f32_f32in_wide", |enc| {
+        enc.set_buffer(0, Some(weight),   0);
+        enc.set_buffer(1, Some(input),    0);
+        enc.set_buffer(2, Some(output),   0);
+        enc.set_buffer(3, Some(residual), 0);
+        enc.set_bytes(4, 4, &m as *const u32 as *const _);
+        enc.set_bytes(5, 4, &k as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, WIDE_SRAM);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_WIDE, height: 1, depth: 1 });
+    })
+}
+
+pub fn gemv_q8_0_f32in_wide(
+    ctx: &MetalContext, weight: &Buffer, input: &Buffer, output: &Buffer,
+    m: u32, k: u32,
+) -> Result<()> {
+    ctx.encode("gemv_q8_0_f32in_wide", |enc| {
+        enc.set_buffer(0, Some(weight), 0);
+        enc.set_buffer(1, Some(input),  0);
+        enc.set_buffer(2, Some(output), 0);
+        enc.set_bytes(3, 4, &m as *const u32 as *const _);
+        enc.set_bytes(4, 4, &k as *const u32 as *const _);
+        enc.set_threadgroup_memory_length(0, WIDE_SRAM);
+        enc.dispatch_thread_groups(
+            MTLSize { width: m as u64, height: 1, depth: 1 },
+            MTLSize { width: TG_WIDE, height: 1, depth: 1 });
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Fused Q4_0 GEMV: 0.5625 bytes/elem — 47% less BW than Q8_0
 // ─────────────────────────────────────────────────────────────────────────────
 
