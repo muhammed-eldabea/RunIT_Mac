@@ -3,6 +3,7 @@ pub mod config;
 pub mod forward;
 #[cfg(target_os = "macos")]
 pub mod kv_cache;
+pub mod paged_kv_cache;
 #[cfg(target_os = "macos")]
 pub mod tq_kv_cache;
 #[cfg(target_os = "macos")]
