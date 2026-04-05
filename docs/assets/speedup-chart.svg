@@ -1,82 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 380" fill="none">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" fill="none">
   <defs>
     <linearGradient id="bg2" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0f0f23"/>
       <stop offset="100%" style="stop-color:#1a1a3e"/>
     </linearGradient>
   </defs>
-  <rect width="720" height="380" rx="12" fill="url(#bg2)"/>
+  <rect width="720" height="340" rx="12" fill="url(#bg2)"/>
 
-  <text x="360" y="28" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="16" font-weight="700" fill="#e0e0e0">Bandwidth Efficiency — Bytes Read per Token vs Speed</text>
-  <text x="360" y="46" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" fill="#8888bb">Apple M4 Pro · Qwen2.5-0.5B · each bar = measured tok/sec</text>
+  <text x="360" y="28" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="16" font-weight="700" fill="#e0e0e0">Multi-Prompt Benchmark — Verified Output Quality</text>
+  <text x="360" y="46" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" fill="#8888bb">Apple M4 Pro · Q8_0 · temperature=0 · 40 tokens each</text>
 
-  <!-- Y-axis -->
-  <text x="38" y="85"  text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">280</text>
-  <text x="38" y="125" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">230</text>
-  <text x="38" y="165" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">180</text>
-  <text x="38" y="205" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">130</text>
-  <text x="38" y="245" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">80</text>
-  <text x="38" y="285" text-anchor="end" font-family="SF Mono,monospace" font-size="9" fill="#666688">30</text>
+  <!-- Column headers -->
+  <text x="250" y="72" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" font-weight="600" fill="#22c55e">Qwen2.5-0.5B</text>
+  <text x="400" y="72" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" font-weight="600" fill="#818cf8">Qwen3-0.6B</text>
+  <text x="530" y="72" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="10" font-weight="600" fill="#c0c0e0">Output Sample</text>
 
-  <!-- Grid -->
-  <line x1="45" y1="80"  x2="680" y2="80"  stroke="#ffffff08" stroke-width="1"/>
-  <line x1="45" y1="120" x2="680" y2="120" stroke="#ffffff08" stroke-width="1"/>
-  <line x1="45" y1="160" x2="680" y2="160" stroke="#ffffff08" stroke-width="1"/>
-  <line x1="45" y1="200" x2="680" y2="200" stroke="#ffffff08" stroke-width="1"/>
-  <line x1="45" y1="240" x2="680" y2="240" stroke="#ffffff08" stroke-width="1"/>
-  <line x1="45" y1="280" x2="680" y2="280" stroke="#ffffff08" stroke-width="1"/>
+  <!-- Row 1: ML question -->
+  <text x="100" y="100" text-anchor="end" font-family="SF Pro Display,Arial" font-size="10" fill="#aaa">ML question</text>
+  <rect x="200" y="87" width="100" height="20" rx="4" fill="#22c55e25"/>
+  <text x="250" y="101" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#22c55e">248 tok/s</text>
+  <rect x="350" y="87" width="100" height="20" rx="4" fill="#818cf825"/>
+  <text x="400" y="101" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#818cf8">176 tok/s</text>
+  <text x="465" y="101" font-family="SF Mono,monospace" font-size="8" fill="#888">"Machine learning is a subset of AI..."</text>
 
-  <!-- llama.cpp reference line -->
-  <line x1="45" y1="120" x2="680" y2="120" stroke="#4ecdc4" stroke-width="1.5" stroke-dasharray="6,3"/>
-  <text x="685" y="123" font-family="SF Mono,monospace" font-size="8" fill="#4ecdc4">llama 230</text>
+  <!-- Row 2: Capital -->
+  <text x="100" y="130" text-anchor="end" font-family="SF Pro Display,Arial" font-size="10" fill="#aaa">France capital</text>
+  <rect x="200" y="117" width="100" height="20" rx="4" fill="#22c55e25"/>
+  <text x="250" y="131" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#22c55e">235 tok/s</text>
+  <rect x="350" y="117" width="100" height="20" rx="4" fill="#818cf825"/>
+  <text x="400" y="131" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#818cf8">176 tok/s</text>
+  <text x="465" y="131" font-family="SF Mono,monospace" font-size="8" fill="#888">"The capital of France is Paris"</text>
 
-  <!-- Bars: height = (tok_sec - 30) / 250 * 200 pixels, y = 280 - height -->
-  <!-- v0.0.1: 73 tok/s, f32 (4.0 B/elem) -->
-  <rect x="70" y="245" width="70" height="35" rx="4" fill="#f97316" opacity="0.7"/>
-  <text x="105" y="240" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#f97316">73</text>
-  <text x="105" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">f32</text>
-  <text x="105" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">4.0 B/el</text>
+  <!-- Row 3: Ocean poem -->
+  <text x="100" y="160" text-anchor="end" font-family="SF Pro Display,Arial" font-size="10" fill="#aaa">Ocean poem</text>
+  <rect x="200" y="147" width="100" height="20" rx="4" fill="#22c55e25"/>
+  <text x="250" y="161" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#22c55e">249 tok/s</text>
+  <rect x="350" y="147" width="100" height="20" rx="4" fill="#818cf825"/>
+  <text x="400" y="161" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#818cf8">176 tok/s</text>
+  <text x="465" y="161" font-family="SF Mono,monospace" font-size="8" fill="#888">"the ocean's role in shaping the world"</text>
 
-  <!-- v0.2.0: 161 tok/s, f16 (2.0 B/elem) -->
-  <rect x="175" y="175" width="70" height="105" rx="4" fill="#86efac" opacity="0.7"/>
-  <text x="210" y="170" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#86efac">161</text>
-  <text x="210" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">f16</text>
-  <text x="210" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">2.0 B/el</text>
+  <!-- Summary -->
+  <rect x="60" y="190" width="600" height="50" rx="8" fill="#ffffff06" stroke="#ffffff10" stroke-width="1"/>
+  <text x="360" y="210" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="600" fill="#e0e0e0">All outputs coherent, factually correct, natural language</text>
+  <text x="360" y="228" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">Qwen3 is slower (176 vs 233) due to head_dim=128 (vs 64) → 2× more weight data per head</text>
 
-  <!-- v0.3.0: 224 tok/s, Q8_0 fused (1.06 B/elem) -->
-  <rect x="280" y="124" width="70" height="156" rx="4" fill="#4ade80" opacity="0.7"/>
-  <text x="315" y="119" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#4ade80">224</text>
-  <text x="315" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q8_0</text>
-  <text x="315" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">1.06 B/el</text>
+  <!-- Key features -->
+  <text x="360" y="265" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="12" font-weight="600" fill="#c0c0e0">Qwen3 Features Supported</text>
+  <text x="130" y="288" font-family="SF Mono,monospace" font-size="9" fill="#818cf8">✓ QK-Norm (per-head RMSNorm on Q and K)</text>
+  <text x="130" y="304" font-family="SF Mono,monospace" font-size="9" fill="#818cf8">✓ Auto head_dim detection from GGUF metadata</text>
+  <text x="420" y="288" font-family="SF Mono,monospace" font-size="9" fill="#818cf8">✓ head_dim=128 (independent of hidden/heads)</text>
+  <text x="420" y="304" font-family="SF Mono,monospace" font-size="9" fill="#818cf8">✓ GQA: 16 Q-heads / 8 KV-heads</text>
 
-  <!-- v0.6.0: 233 tok/s, Q8_0 + fusion -->
-  <rect x="385" y="118" width="70" height="162" rx="4" fill="#22c55e" opacity="0.7"/>
-  <text x="420" y="113" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#22c55e">233</text>
-  <text x="420" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q8+fuse</text>
-  <text x="420" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">1.06 B/el</text>
-
-  <!-- v0.7.0: 258 tok/s, Q4_0 fused (0.56 B/elem) -->
-  <rect x="490" y="97" width="70" height="183" rx="4" fill="#f59e0b" opacity="0.85"/>
-  <text x="525" y="92" text-anchor="middle" font-family="SF Mono,monospace" font-size="13" font-weight="bold" fill="#f59e0b">258 🏆</text>
-  <text x="525" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">Q4_0</text>
-  <text x="525" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">0.56 B/el</text>
-
-  <!-- llama.cpp bar for comparison -->
-  <rect x="595" y="120" width="70" height="160" rx="4" fill="#4ecdc4" opacity="0.4"/>
-  <text x="630" y="115" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" font-weight="bold" fill="#4ecdc4">230</text>
-  <text x="630" y="295" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#aaa">llama.cpp</text>
-  <text x="630" y="307" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">Q8_0</text>
-
-  <!-- Legend -->
-  <rect x="100" y="336" width="10" height="10" rx="2" fill="#f97316"/>
-  <text x="115" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.0.1</text>
-  <rect x="170" y="336" width="10" height="10" rx="2" fill="#86efac"/>
-  <text x="185" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.2.0</text>
-  <rect x="240" y="336" width="10" height="10" rx="2" fill="#4ade80"/>
-  <text x="255" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.3.0</text>
-  <rect x="310" y="336" width="10" height="10" rx="2" fill="#22c55e"/>
-  <text x="325" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.6.0</text>
-  <rect x="380" y="336" width="10" height="10" rx="2" fill="#f59e0b"/>
-  <text x="395" y="346" font-family="SF Mono,monospace" font-size="9" fill="#aaa">v0.7.0</text>
-  <text x="455" y="346" font-family="SF Mono,monospace" font-size="9" fill="#666">Less bytes/elem → less bandwidth → faster</text>
+  <text x="360" y="330" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">llama.cpp reference: 230 tok/sec on Qwen2.5-0.5B Q8_0</text>
 </svg>

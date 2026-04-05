@@ -12,13 +12,13 @@
 
   <!-- Title -->
   <text x="480" y="34" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="20" font-weight="800" fill="#e0e0f0">RunIT Engine — System Architecture</text>
-  <text x="480" y="54" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#7777aa">Bare-metal Rust + Metal GPU · 258 tok/sec · 15 shaders · 85+ kernels</text>
+  <text x="480" y="54" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#7777aa">Bare-metal Rust + Metal GPU · 233 tok/sec (Q8_0) · 15 shaders · 85+ kernels</text>
 
   <!-- ═══ ROW 1: Input Sources ═══ -->
   <rect x="60" y="75" width="175" height="68" rx="10" fill="#1e1e3a" stroke="#f97316" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="148" y="96" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#f97316">📦 GGUF Model</text>
   <text x="148" y="114" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a0a0c0">mmap zero-copy · Q4_0/Q8_0/Q4K</text>
-  <text x="148" y="128" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">Qwen2 · LLaMA · Mistral · OLMoE</text>
+  <text x="148" y="128" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#666">Qwen2 · Qwen3 · LLaMA · Mistral · OLMoE</text>
 
   <rect x="270" y="75" width="155" height="68" rx="10" fill="#1e1e3a" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
   <text x="348" y="96" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="11" font-weight="700" fill="#3b82f6">📝 Tokenizer</text>
@@ -70,7 +70,7 @@
   <text x="385" y="352" text-anchor="middle" font-family="SF Pro Display,Arial" font-size="10" font-weight="700" fill="#818cf8">Self-Attention</text>
 
   <rect x="240" y="358" width="290" height="18" rx="4" fill="#f59e0b12"/>
-  <text x="385" y="371" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">① Fused QKV+bias (Q4_0/Q8_0) — 1 dispatch</text>
+  <text x="385" y="371" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">① Fused QKV+bias (Q4_0/Q8_0) + QK-norm (Qwen3)</text>
 
   <rect x="240" y="380" width="140" height="18" rx="4" fill="#6366f112"/>
   <text x="310" y="393" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#a5b4fc">② Fused QK RoPE</text>
@@ -189,8 +189,8 @@
 
   <rect x="715" y="199" width="190" height="47" rx="6" fill="#0f172a" stroke="#f59e0b40" stroke-width="1"/>
   <text x="810" y="216" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" font-weight="700" fill="#f59e0b">Performance</text>
-  <text x="810" y="230" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">258 tok/sec · 3.87 ms/tok</text>
-  <text x="810" y="242" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#4ade80">3.5× speedup · exceeds llama.cpp</text>
+  <text x="810" y="230" text-anchor="middle" font-family="SF Mono,monospace" font-size="8" fill="#f59e0b">233 tok/sec (Q8) · 176 tok/sec (Qwen3)</text>
+  <text x="810" y="242" text-anchor="middle" font-family="SF Mono,monospace" font-size="7" fill="#4ade80">3.2× speedup · matches llama.cpp · Qwen3 support</text>
 
   <!-- ═══ Footer ═══ -->
   <rect x="200" y="720" width="560" height="46" rx="10" fill="#ffffff04" stroke="#ffffff12" stroke-width="1"/>

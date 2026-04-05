@@ -71,5 +71,5 @@
 
   <!-- Footer -->
   <rect x="60" y="308" width="580" height="22" rx="6" fill="#ffffff06"/>
-  <text x="350" y="323" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">Every token identical to llama.cpp · f32 precision pipeline · 233 tok/sec with 3.5× speedup</text>
+  <text x="350" y="323" text-anchor="middle" font-family="SF Mono,monospace" font-size="9" fill="#888">Every token identical to llama.cpp · f32 precision pipeline · 233 tok/sec · 3.2× speedup · Qwen2 + Qwen3 support</text>
 </svg>

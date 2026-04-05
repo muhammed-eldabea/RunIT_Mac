@@ -25,10 +25,11 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  🎯 100% token-match with llama.cpp on Qwen2.5-0.5B Q8_0      │
-│  ⚡ 233 tok/sec decode (Q8_0) — matches llama.cpp, 3.2× speedup │
+│  ⚡ 233 tok/sec (Q8_0, 3.2× speedup) — matches llama.cpp       │
+│  🧠 Qwen2 + Qwen3 + LLaMA + Mistral + OLMoE architectures    │
 │  🦀 Pure Rust — zero Python runtime                            │
 │  🔧 15 Metal shaders, 85+ GPU kernels, fused Q4/Q8 dequant    │
-│  📦 GGUF native — loads any GGUF quantized model               │
+│  📦 GGUF native — Q4_0, Q8_0, Q4K, Q5K, Q6K, F16, BF16      │
 │  🌐 OpenAI-compatible HTTP server                              │
 │  🔬 f32 precision pipeline for research-grade accuracy         │
 └─────────────────────────────────────────────────────────────────┘
@@ -218,8 +219,11 @@ Token Embedding (f32 lookup)
 RMSNorm (f32 in → f32 out, f32 gamma)
     │
     ▼
-Q/K/V Projections (f16 weights × f32 input → f32 output)
+Q/K/V Projections (fused QKV+bias, Q8_0/Q4_0 on-the-fly dequant)
     │                    └── simd_sum + vectorized half4 loads
+    ▼
+QK-Norm (optional, Qwen3: per-head RMSNorm on Q and K)
+    │
     ▼
 RoPE (f32, non-interleaved pairing)
     │
@@ -243,23 +247,25 @@ lm_head (f16 weights × f32 input → f32 logits)
 
 ## 📦 Supported Models & Quantizations
 
-| Architecture | Status | Models Tested |
-|-------------|--------|---------------|
-| **Qwen2** | ✅ Full support | Qwen2.5-0.5B, Qwen2.5-Coder-7B |
-| **LLaMA** | ✅ Full support | LLaMA-2, LLaMA-3 |
-| **Mistral** | ✅ Full support | Mistral-7B |
-| **OLMoE** | ✅ MoE support | OLMoE-1B-7B |
+| Architecture | Status | Models Tested | tok/sec |
+|-------------|--------|---------------|:-------:|
+| **Qwen2** | ✅ Full support | Qwen2.5-0.5B (Q8\_0) | **233** |
+| **Qwen3** | ✅ Full support | Qwen3-0.6B (Q8\_0) | **176** |
+| **LLaMA** | ✅ Full support | LLaMA-2, LLaMA-3 | — |
+| **Mistral** | ✅ Full support | Mistral-7B | — |
+| **OLMoE** | ✅ MoE support | OLMoE-1B-7B (Q4K\_M) | — |
 
 | Quantization | Status | Notes |
 |-------------|--------|-------|
-| **Q8\_0** | ✅ Best quality | Dequant to f32, precise |
-| **Q4\_K\_M** | ✅ Recommended | Fused GPU dequant, 3.5x less bandwidth |
-| **Q6\_K** | ✅ Supported | CPU dequant to f32 |
-| **Q5\_K** | ✅ Supported | CPU dequant to f32 |
-| **Q5\_0** | ✅ Supported | CPU dequant to f32 |
-| **Q4\_0** | ✅ Supported | CPU dequant to f32 |
-| **F16** | ✅ Native | Zero-copy or memcpy |
-| **BF16** | ✅ Converted | BF16 → f32 at load time |
+| **Q8\_0** | ✅ **Fused GEMV** | On-the-fly dequant, 1.06 B/elem — primary path |
+| **Q4\_0** | ✅ **Fused GEMV** | On-the-fly dequant, 0.56 B/elem — fastest (3B+ models) |
+| **Q4\_K\_M** | ✅ Fused Q4K | GPU dequant for aligned K, f16 fallback |
+| **Q6\_K** | ✅ Supported | CPU dequant to f16 |
+| **Q5\_K** | ✅ Supported | CPU dequant to f16 |
+| **Q5\_0** | ✅ Supported | CPU dequant to f16 |
+| **Q8\_K** | ✅ Supported | CPU dequant to f16 |
+| **F16** | ✅ Native | Zero-copy if page-aligned |
+| **BF16** | ✅ Converted | BF16 → f16 at load time |
 
 ---
 
@@ -283,7 +289,9 @@ lm_head (f16 weights × f32 input → f32 logits)
 | 13 | **Kernel fusion** (QKV+bias, FFN, RoPE) + multi-row | ✅ **Done** |
 | 14 | **Fused Q4\_0 GEMV** (for larger models at 4-bit) | ✅ **Done** |
 | 15 | **Profiling + speculative decoding infra** | ✅ **Done** |
-| 16 | PagedAttention KV cache + continuous batching | 🔜 Next |
+| 16 | **Qwen3 support** (QK-norm + head\_dim detection) | ✅ **Done** |
+| 17 | 7B model support + benchmarks | 🔜 Next |
+| 18 | PagedAttention KV cache + continuous batching | 📋 Planned |
 
 ---
 
