@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-bench"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bare-metal-engine",
  "bare-metal-gguf",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-engine"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-gguf"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bytemuck",
  "half",
@@ -156,7 +156,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-kernels"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "bare-metal-reference",
  "half",
@@ -168,7 +168,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-reference"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "thiserror 2.0.18",
  "tracing",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "bare-metal-tokenizer"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "thiserror 2.0.18",
  "tokenizers",

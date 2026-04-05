@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "Numerical validation harness for bare-metal LLM inference kernels"
+readme = "README.md"
 keywords = ["llm", "inference", "validation", "testing"]
 categories = ["development-tools::testing"]
 

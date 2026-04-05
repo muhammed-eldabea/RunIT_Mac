@@ -1,5 +1,5 @@
-   0.083457042s  INFO prepare_target{force=false package_id=bare-metal-engine v0.7.0 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine) target="qwen2_load_test"}: cargo::core::compiler::fingerprint: fingerprint error for bare-metal-engine v0.7.0 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine)/Check { test: true }/TargetInner { kind: "test", name: "qwen2_load_test", benched: false, ..: with_path("/Users/mohamedeldabaa/RunIT_MacOS/crates/engine/tests/qwen2_load_test.rs", Edition2021) }
-   0.083472500s  INFO prepare_target{force=false package_id=bare-metal-engine v0.7.0 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine) target="qwen2_load_test"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/mohamedeldabaa/RunIT_MacOS/target/debug/.fingerprint/bare-metal-engine-9a616f6ab85883fe/test-integration-test-qwen2_load_test`
+   0.082970375s  INFO prepare_target{force=false package_id=bare-metal-engine v0.7.1 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine) target="qwen2_load_test"}: cargo::core::compiler::fingerprint: fingerprint error for bare-metal-engine v0.7.1 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine)/Check { test: true }/TargetInner { kind: "test", name: "qwen2_load_test", benched: false, ..: with_path("/Users/mohamedeldabaa/RunIT_MacOS/crates/engine/tests/qwen2_load_test.rs", Edition2021) }
+   0.082986416s  INFO prepare_target{force=false package_id=bare-metal-engine v0.7.1 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine) target="qwen2_load_test"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/mohamedeldabaa/RunIT_MacOS/target/debug/.fingerprint/bare-metal-engine-278cdc1fa5775b72/test-integration-test-qwen2_load_test`
 
 Caused by:
     No such file or directory (os error 2)
@@ -22,6 +22,6 @@ Stack backtrace:
   14: std::rt::lang_start::<()>::{closure#0}
   15: std::rt::lang_start_internal
   16: _main
-warning: bare-metal-kernels@0.7.0: Compiled 16 Metal shader(s) → /Users/mohamedeldabaa/RunIT_MacOS/target/debug/build/bare-metal-kernels-ffde49033e386f63/out/kernels.metallib
-    Checking bare-metal-engine v0.7.0 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine)
+warning: bare-metal-kernels@0.7.1: Compiled 16 Metal shader(s) → /Users/mohamedeldabaa/RunIT_MacOS/target/debug/build/bare-metal-kernels-e1babdbd333d12ad/out/kernels.metallib
+    Checking bare-metal-engine v0.7.1 (/Users/mohamedeldabaa/RunIT_MacOS/crates/engine)
 error: could not compile `bare-metal-engine` (test "qwen2_load_test") due to 2 previous errors

@@ -7,6 +7,7 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 description = "From-scratch LLM inference engine for Apple Silicon — 233 tok/sec, 85+ Metal GPU kernels"
+readme = "README.md"
 keywords = ["llm", "inference", "apple-silicon", "metal", "transformer"]
 categories = ["science", "command-line-utilities"]
 
