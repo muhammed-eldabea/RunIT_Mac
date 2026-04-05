@@ -741,18 +741,16 @@ fn upload_weight(
             let qs     = &block[32..96];
             let scales = &block[96..108];
             let d = f16::from_le_bytes([block[108], block[109]]).to_f32();
-            // Q3K scale unpacking: 12 bytes encode 16 scales
-            // Low 6 bytes: each byte → 2 scales (lo nibble + hi nibble)
-            // High 6 bytes: additional bits for scales 8..15
-            let mut sc = [0i32; 16];
-            for i in 0..8 {
-                let lo = (scales[i] & 0x0F) as i32;
-                let hi = (scales[i] >> 4) as i32;
-                sc[i] = lo;
-                sc[i + 8] = hi;
+            // Q3K scale extraction: 12 bytes → 16 6-bit scales (each offset by 32)
+            // ggml packs: scales[0..3] have lo 4 bits, scales[4..7] have lo 4 bits,
+            // scales[8..11] have the upper 2 bits for all 16 scales.
+            let mut us = [0u8; 16]; // unsigned 6-bit scales
+            for i in 0..4 {
+                us[i]     = (scales[i] & 0xF) | (((scales[8 + i] >> 0) & 3) << 4);
+                us[i + 4] = (scales[i] >> 4)   | (((scales[8 + i] >> 2) & 3) << 4);
+                us[i + 8] = (scales[4 + i] & 0xF) | (((scales[8 + i] >> 4) & 3) << 4);
+                us[i +12] = (scales[4 + i] >> 4)   | (((scales[8 + i] >> 6) & 3) << 4);
             }
-            // Make scales signed: Q3K scales are offset by 32
-            // (or use them as-is with the q-4 offset)
             let mut vals = [0.0f32; 256];
             for j in 0..256 {
                 let byte_idx = j / 4;
@@ -761,7 +759,8 @@ fn upload_weight(
                 let q_hi = ((hmask[j / 8] >> (j % 8)) & 1) as i32;
                 let q = q_lo | (q_hi << 2); // 3-bit value 0..7
                 let sub_block = j / 16;
-                vals[j] = d * sc[sub_block] as f32 * (q as f32 - 4.0);
+                let scale = (us[sub_block] as i32) - 32; // signed scale
+                vals[j] = d * scale as f32 * (q as f32 - 4.0);
             }
             for v in &vals {
                 f16_vec.push(f16::from_f32(*v));
@@ -1085,14 +1084,23 @@ fn upload_weight_as_f32(
             let block = &raw[b * BB..(b + 1) * BB];
             let hmask  = &block[0..32];
             let qs     = &block[32..96];
-            let _scales = &block[96..108];
+            let scales = &block[96..108];
             let d = f16::from_le_bytes([block[108], block[109]]).to_f32();
+            // Q3K scale extraction: 12 bytes → 16 6-bit scales
+            let mut us = [0u8; 16];
+            for i in 0..4 {
+                us[i]     = (scales[i] & 0xF) | (((scales[8+i] >> 0) & 3) << 4);
+                us[i + 4] = (scales[i] >> 4)   | (((scales[8+i] >> 2) & 3) << 4);
+                us[i + 8] = (scales[4+i] & 0xF) | (((scales[8+i] >> 4) & 3) << 4);
+                us[i +12] = (scales[4+i] >> 4)   | (((scales[8+i] >> 6) & 3) << 4);
+            }
             let mut vals = [0.0f32; 256];
             for j in 0..256 {
                 let q_lo = ((qs[j / 4] >> ((j % 4) * 2)) & 3) as i32;
                 let q_hi = ((hmask[j / 8] >> (j % 8)) & 1) as i32;
                 let q = q_lo | (q_hi << 2);
-                vals[j] = d * (q as f32 - 4.0);
+                let scale = (us[j / 16] as i32) - 32;
+                vals[j] = d * scale as f32 * (q as f32 - 4.0);
             }
             f32_vec.extend_from_slice(&vals);
         }
